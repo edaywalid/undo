@@ -340,37 +340,53 @@ static int ignored(const char *abs)
  * otherwise save one backup per write. Only the first (pre-command)
  * backup is needed to restore, so we record which paths have been saved
  * and skip the rest. Best-effort: once the table fills we stop deduping,
- * which only costs extra backups, never a missed one. */
+ * which only costs extra backups, never a missed one.
+ *
+ * Slots hold path hashes, not the paths, so the table owns no memory:
+ * malloc inside an interposed open() is a hazard of its own, and with
+ * nothing to free there is nothing a second thread can pull out from
+ * under us when the session changes. */
 #define DEDUP_CAP 16384
-static char *dedup_tab[DEDUP_CAP];
+static uint64_t dedup_tab[DEDUP_CAP];
 static int dedup_count;
+static char dedup_dir[PATH_MAX];
 
-static unsigned long path_hash(const char *s)
+static uint64_t path_hash(const char *s)
 {
-    unsigned long h = 1469598103934665603UL;
+    uint64_t h = 1469598103934665603ULL;
     for (; *s; s++) {
         h ^= (unsigned char)*s;
-        h *= 1099511628211UL;
+        h *= 1099511628211ULL;
     }
-    return h;
+    return h ? h : 1; /* 0 marks an empty slot */
 }
 
 /* returns 1 if `abs` was already saved this command (skip it); otherwise
- * records it and returns 0. */
+ * records it and returns 0.
+ *
+ * The table covers one command. A shell preloaded with the shim
+ * (UNDO_CAPTURE_SHELL=1) outlives every session it runs, so a path saved
+ * for an earlier command must not suppress its backup in the next one. */
 static int mod_seen(const char *abs)
 {
+    const char *dir = session_dir();
+    if (!dir)
+        return 0;
+    if (strcmp(dedup_dir, dir) != 0) {
+        memset(dedup_tab, 0, sizeof dedup_tab);
+        dedup_count = 0;
+        snprintf(dedup_dir, sizeof dedup_dir, "%s", dir);
+    }
     if (dedup_count * 4 >= DEDUP_CAP * 3)
         return 0; /* table nearly full: stop deduping, keep saving */
-    unsigned long i = path_hash(abs) & (DEDUP_CAP - 1);
+    uint64_t h = path_hash(abs);
+    unsigned long i = h & (DEDUP_CAP - 1);
     while (dedup_tab[i]) {
-        if (strcmp(dedup_tab[i], abs) == 0)
+        if (dedup_tab[i] == h)
             return 1;
         i = (i + 1) & (DEDUP_CAP - 1);
     }
-    char *dup = strdup(abs);
-    if (!dup)
-        return 0; /* out of memory: save anyway */
-    dedup_tab[i] = dup;
+    dedup_tab[i] = h;
     dedup_count++;
     return 0;
 }
@@ -547,11 +563,9 @@ int rmdir(const char *path)
     int ok;
     handle_rmdir_pre(AT_FDCWD, path, abs, mode, &ok);
     int rc = real_rmdir(path);
-    if (rc == 0 && ok) {
-        in_shim = 1;
+    if (rc == 0 && ok)
         jwrite("rmdir", abs, mode, NULL);
-        in_shim = 0;
-    }
+    in_shim = 0;
     return rc;
 }
 
