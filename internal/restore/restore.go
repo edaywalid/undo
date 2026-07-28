@@ -279,12 +279,7 @@ func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 			if !act() {
 				continue
 			}
-			tmp := field(0) + ".undo-xchg"
-			if err = os.Rename(field(0), tmp); err == nil {
-				if err = os.Rename(field(1), field(0)); err == nil {
-					err = os.Rename(tmp, field(1))
-				}
-			}
+			err = swapAny(field(0), field(1))
 
 		case journal.OpMkdir:
 			if dir == Undo {

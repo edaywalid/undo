@@ -188,6 +188,27 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	}
 }
 
+func TestExchange(t *testing.T) {
+	work := t.TempDir()
+	a := filepath.Join(work, "a")
+	b := filepath.Join(work, "b")
+	write(t, a, "AAA")
+	write(t, b, "BBB")
+	s := newSession(t, []journal.Entry{
+		{Op: journal.OpExchange, Fields: []string{a, b}},
+	})
+
+	if _, err := Run(s, Undo, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, a); got != "BBB" {
+		t.Fatalf("a = %q, want BBB", got)
+	}
+	if got := read(t, b); got != "AAA" {
+		t.Fatalf("b = %q, want AAA", got)
+	}
+}
+
 func TestSelectiveReplayLeavesStateAndOthers(t *testing.T) {
 	work := t.TempDir()
 	f1 := filepath.Join(work, "one.txt")
