@@ -345,7 +345,12 @@ static int ignored(const char *abs)
  * Slots hold path hashes, not the paths, so the table owns no memory:
  * malloc inside an interposed open() is a hazard of its own, and with
  * nothing to free there is nothing a second thread can pull out from
- * under us when the session changes. */
+ * under us when the session changes.
+ *
+ * What that costs: two paths sharing a 64-bit hash dedup as one and the
+ * second goes unsaved. Around 1e-10 for a command touching 100k distinct
+ * paths, against allocating inside open() on every write. Worth it, but
+ * it is the one way this table can lose a backup rather than add one. */
 #define DEDUP_CAP 16384
 static uint64_t dedup_tab[DEDUP_CAP];
 static int dedup_count;
