@@ -237,7 +237,14 @@ else
     echo "== case 21: skipped (no python3)"
 fi
 
-echo "== case 22: undo doctor passes its live self-test"
+echo "== case 22: undo run reports a signal death the way a shell does"
+set +e
+"$UNDO" run -- sh -c 'kill -TERM $$' >/dev/null 2>&1
+rc=$?
+set -e
+[[ $rc == 143 ]] || fail "expected 143 from a SIGTERM death, got $rc"
+
+echo "== case 23: undo doctor passes its live self-test"
 out=$("$UNDO" doctor 2>&1) || fail "doctor exited non-zero: $out"
 grep -q "\[ok  \] capture" <<<"$out" || fail "doctor capture check did not pass"
 grep -q "\[ok  \] restore" <<<"$out" || fail "doctor restore check did not pass"

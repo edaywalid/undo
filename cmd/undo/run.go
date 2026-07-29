@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/edaywalid/undo/internal/session"
 )
@@ -105,6 +106,11 @@ func cmdRun(argv []string) {
 	if runErr != nil {
 		if ee, ok := runErr.(*exec.ExitError); ok {
 			code = ee.ExitCode()
+			// killed by a signal: ExitCode is -1, which os.Exit turns
+			// into 255. Report it the way a shell does.
+			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				code = 128 + int(ws.Signal())
+			}
 		} else {
 			s.Remove()
 			fatal(runErr)
