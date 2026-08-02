@@ -54,6 +54,13 @@ changelog:
       - '^ci:'
       - '^docs:'
 
+release:
+  # A publish that dies partway leaves the assets uploaded, and the retry
+  # then fails on every one of them as already existing, so the pipes after
+  # it never run again. v0.2.9 died that way on an AUR outage and had to be
+  # finished by hand. Overwrite instead, which makes a re-run the fix.
+  replace_existing_artifacts: true
+
 # The standard path for a Go project on Arch: goreleaser writes and pushes
 # the -bin PKGBUILD itself, taking the checksums from the archives it just
 # built, so pkgver and sums cannot drift apart. Arch guidelines reserve the
