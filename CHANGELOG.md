@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.9 - 2026-08-02
+
+- The shim could stop journaling partway through a command with no sign
+  that it had, so `undo` reported "nothing to undo" for changes it
+  should have caught. Two paths led there. `rmdir` set the reentrancy
+  guard on entry but cleared it only on success, so any failed `rmdir`
+  (a non-empty directory, a missing one) left the shim deaf for the rest
+  of that process: `rmdir a b` with a non-empty `a` was enough to lose
+  everything `b` did. Separately, the table that suppresses repeat
+  backups of the same file was keyed on nothing, so it survived across
+  commands in a process that outlives one. That is exactly the
+  `UNDO_CAPTURE_SHELL=1` setup, where the shim lives in the shell
+  itself, and a file written in one command went unbacked in every later
+  one. The table now resets when the session changes. Fixed by @lai0xn
+  in #3; @davised reported the `rmdir` half independently in #6.
+- `undo run -- <cmd>` exited 255 when the command was killed by a
+  signal, which is not what the shell it stands in for would report. It
+  now exits 128+signal, so a wrapped command interrupted with Ctrl-C
+  gives 130 the way the unwrapped one does.
+- Undoing a `RENAME_EXCHANGE` could leave both paths empty. The swap ran
+  through a temporary name, and if the middle step failed nothing put
+  the first file back: it stayed parked at `<path>.undo-xchg`. Exchanges
+  now go through the same helper the file-modification path uses, which
+  rolls back on failure and moves the survivor into place when only one
+  side is still there. Reported as a cross-device bug by @Arielpetit in
+  #4; the kernel only permits an exchange within one filesystem, so the
+  missing rollback was the real defect.
+
 ## v0.2.8 - 2026-07-29
 
 - Homebrew install instructions pointed at the wrong hook path. The site
