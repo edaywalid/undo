@@ -64,8 +64,20 @@ jobs:
             echo "AUR_KEY not set, skipping the source package"
             exit 0
           fi
-          sudo pacman -Sy --noconfirm pacman-contrib 2>/dev/null || true
-          ./packaging/aur/render.sh "${GITHUB_REF_NAME}"
+          # render.sh needs makepkg to write .SRCINFO, which exists only on
+          # Arch and refuses to run as root. The `pacman || true` that used
+          # to stand here silently did nothing on ubuntu, so .SRCINFO was
+          # never regenerated and the AUR kept serving an older pkgver than
+          # the PKGBUILD beside it.
+          docker run --rm -e TAG="${GITHUB_REF_NAME}" -v "$PWD:/w" -w /w \
+            archlinux:base-devel bash -c '
+              set -e
+              command -v curl >/dev/null || pacman -Sy --noconfirm --needed curl
+              useradd -m builder
+              chown -R builder /w
+              su builder -c "packaging/aur/render.sh $TAG"
+            '
+          sudo chown -R "$(id -u):$(id -g)" packaging/aur
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$AUR_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
           cat >> ~/.ssh/config <<'EOF'
@@ -78,9 +90,9 @@ jobs:
           git config --global user.name edaywalid
           git config --global user.email becharwalid9@gmail.com
           git clone ssh://aur@aur.archlinux.org/undo-cli.git /tmp/undo-cli
-          cp packaging/aur/undo-cli/PKGBUILD /tmp/undo-cli/
-          [ -f packaging/aur/undo-cli/.SRCINFO ] &&
-            cp packaging/aur/undo-cli/.SRCINFO /tmp/undo-cli/
+          # both, always: shipping one without the other is the drift above
+          cp packaging/aur/undo-cli/PKGBUILD packaging/aur/undo-cli/.SRCINFO \
+            /tmp/undo-cli/
           git -C /tmp/undo-cli add -A
           if git -C /tmp/undo-cli diff --cached --quiet; then
             echo "undo-cli unchanged"
