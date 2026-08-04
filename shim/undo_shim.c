@@ -146,6 +146,34 @@ static int abs_path(int dirfd, const char *path, char *out)
     return 0;
 }
 
+/* Path behind an open descriptor, for the calls that are handed an fd and
+ * no name. /proc is the only way to ask, and it answers for things that
+ * are not files in the tree: a pipe or socket reads back as "pipe:[...]",
+ * and a file whose name is already gone gets " (deleted)" appended. Both
+ * are useless to restore, so take only an absolute path.
+ *
+ * A real file named "... (deleted)" is indistinguishable here and gets
+ * skipped. Nothing better is available, and the cost is one missed backup
+ * for a name nobody types. */
+static int fd_path(int fd, char *out)
+{
+    if (fd < 0)
+        return -1;
+    char proc[64];
+    snprintf(proc, sizeof proc, "/proc/self/fd/%d", fd);
+    ssize_t n = readlink(proc, out, PATH_MAX - 1);
+    if (n < 0 || n >= PATH_MAX - 1)
+        return -1;
+    out[n] = 0;
+    if (out[0] != '/')
+        return -1;
+    const char del[] = " (deleted)";
+    size_t dlen = sizeof del - 1;
+    if ((size_t)n >= dlen && strcmp(out + n - dlen, del) == 0)
+        return -1;
+    return 0;
+}
+
 /* ---------- backups ---------- */
 
 /* Hand-rolled so the shim never references strtoul. Under _GNU_SOURCE a
@@ -810,6 +838,31 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
     return rc;
 }
 
+/* chmod and fchmodat were interposed but fchmod was not, so the same mode
+ * change went unrecorded whenever the caller held a descriptor.
+ *
+ * copy_file() calls fchmod on the backup it just wrote, which now lands
+ * here first. It runs with in_shim set, so armed() is false and it goes
+ * straight through: no recursion, and no journal line for the backup. */
+int fchmod(int fd, mode_t mode)
+{
+    REAL(fchmod, int, int, mode_t);
+    if (!armed())
+        return real_fchmod(fd, mode);
+    in_shim = 1;
+    char abs[PATH_MAX], oldmode[8];
+    int ok = 0;
+    struct stat st;
+    if (fd_path(fd, abs) == 0 && !ignored(abs) && stat(abs, &st) == 0) {
+        snprintf(oldmode, sizeof oldmode, "%o", st.st_mode & 07777);
+        ok = 1;
+    }
+    int rc = real_fchmod(fd, mode);
+    chmod_post(rc, abs, oldmode, mode, ok);
+    in_shim = 0;
+    return rc;
+}
+
 /* saves path, runs `call`, journals the backup if the call stuck */
 static int truncate_common(const char *path, int (*call)(const char *, off_t),
                            off_t length)
@@ -852,6 +905,48 @@ int truncate64(const char *path, off64_t length)
         return real_truncate64(path, length);
     return truncate_common(path, (int (*)(const char *, off_t))real_truncate64,
                            (off_t)length);
+}
+#endif
+
+/* truncate_common for a caller holding a descriptor instead of a name.
+ * Opening a file and truncating the fd is the ordinary way a logger or an
+ * editor empties one, and none of it was recorded while only the by-name
+ * calls were interposed. */
+static int ftruncate_common(int fd, int (*call)(int, off_t), off_t length)
+{
+    in_shim = 1;
+    char abs[PATH_MAX], bak[PATH_MAX];
+    int have = 0;
+    struct stat st;
+    if (fd_path(fd, abs) == 0 && !ignored(abs) && lstat(abs, &st) == 0 &&
+        S_ISREG(st.st_mode) && !mod_seen(abs))
+        have = save_file(abs, 1, bak) == 0;
+    int rc = call(fd, length);
+    if (rc == 0 && have)
+        jwrite("mod", abs, bak, NULL);
+    else if (have)
+        unlink(bak);
+    in_shim = 0;
+    return rc;
+}
+
+int ftruncate(int fd, off_t length)
+{
+    REAL(ftruncate, int, int, off_t);
+    if (!armed())
+        return real_ftruncate(fd, length);
+    return ftruncate_common(fd, real_ftruncate, length);
+}
+
+/* same _FILE_OFFSET_BITS=64 split as truncate64 above */
+#ifdef __GLIBC__
+int ftruncate64(int fd, off64_t length)
+{
+    REAL(ftruncate64, int, int, off64_t);
+    if (!armed())
+        return real_ftruncate64(fd, length);
+    return ftruncate_common(fd, (int (*)(int, off_t))real_ftruncate64,
+                            (off_t)length);
 }
 #endif
 

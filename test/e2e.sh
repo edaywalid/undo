@@ -249,5 +249,64 @@ out=$("$UNDO" doctor 2>&1) || fail "doctor exited non-zero: $out"
 grep -q "\[ok  \] capture" <<<"$out" || fail "doctor capture check did not pass"
 grep -q "\[ok  \] restore" <<<"$out" || fail "doctor restore check did not pass"
 
+echo "== case 24: truncating a descriptor opened before the session is caught"
+# A file opened for writing is backed up by the open hook, so truncating
+# that descriptor later is already covered. What is not: a descriptor that
+# was opened before this session started, whose open no armed shim ever
+# saw. Inherit fd 9 from outside and empty it from inside.
+#
+# Built both ways: _FILE_OFFSET_BITS=64 calls ftruncate64 instead, the same
+# split truncate64 has.
+cat >"$WORK/ftr.c" <<'CEOF'
+#include <stdlib.h>
+#include <unistd.h>
+int main(int c, char **v)
+{
+    (void)c;
+    return ftruncate(atoi(v[1]), 0) != 0;
+}
+CEOF
+if cc -o "$WORK/ftr32" "$WORK/ftr.c" 2>/dev/null &&
+    cc -D_FILE_OFFSET_BITS=64 -o "$WORK/ftr64" "$WORK/ftr.c" 2>/dev/null; then
+    for bits in 32 64; do
+        printf 'keep me\n' >"$PLAY/ftrunc.txt"
+        exec 9>>"$PLAY/ftrunc.txt"
+        run_armed "$WORK/ftr$bits 9"
+        exec 9>&-
+        [[ ! -s $PLAY/ftrunc.txt ]] || fail "ftruncate ($bits) did not run"
+        "$UNDO" -y >/dev/null
+        [[ $(cat "$PLAY/ftrunc.txt") == "keep me" ]] ||
+            fail "ftruncate ($bits) not restored"
+    done
+else
+    echo "   (no cc, skipped)"
+fi
+
+echo "== case 25: fchmod through an open descriptor is caught"
+# chmod and fchmodat were interposed, fchmod was not, so the same mode
+# change was recorded or lost depending on which one the caller reached for
+cat >"$WORK/fch.c" <<'CEOF'
+#include <fcntl.h>
+#include <sys/stat.h>
+int main(int c, char **v)
+{
+    (void)c;
+    int fd = open(v[1], O_RDONLY);
+    if (fd < 0)
+        return 1;
+    return fchmod(fd, 0600) != 0;
+}
+CEOF
+if cc -o "$WORK/fch" "$WORK/fch.c" 2>/dev/null; then
+    printf 'modes\n' >"$PLAY/fchm.txt"
+    chmod 644 "$PLAY/fchm.txt"
+    run_armed "$WORK/fch $PLAY/fchm.txt"
+    [[ $(stat -c %a "$PLAY/fchm.txt") == 600 ]] || fail "fchmod did not run"
+    "$UNDO" -y >/dev/null
+    [[ $(stat -c %a "$PLAY/fchm.txt") == 644 ]] || fail "fchmod mode not restored"
+else
+    echo "   (no cc, skipped)"
+fi
+
 echo
 echo "all cases passed"

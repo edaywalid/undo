@@ -305,7 +305,8 @@ libc. undo does **not** see:
 
 - static binaries and programs that make raw syscalls (Go programs)
 - `sudo` and setuid programs; the loader strips `LD_PRELOAD`
-- writes through already-open file descriptors, `ftruncate`, mmap writes
+- plain writes through a descriptor opened before the session, mmap writes
+  (`ftruncate` on such a descriptor **is** covered)
 - `chown` and other metadata beyond mode (`chmod` **is** covered)
 - anything run outside the hooked shell (use `undo run` there)
 
