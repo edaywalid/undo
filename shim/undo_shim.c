@@ -375,23 +375,39 @@ static int ignored(const char *abs)
  * nothing to free there is nothing a second thread can pull out from
  * under us when the session changes.
  *
- * What that costs: two paths sharing a 64-bit hash dedup as one and the
- * second goes unsaved. Around 1e-10 for a command touching 100k distinct
- * paths, against allocating inside open() on every write. Worth it, but
- * it is the one way this table can lose a backup rather than add one. */
+ * Keyed on 128 bits, because a collision here does not cost an extra
+ * backup, it drops one: two paths landing on the same key dedup as one
+ * and the second is never saved. A single 64-bit key put that near 1e-10
+ * for a command touching 100k paths, which is small but is silent data
+ * loss, the one failure this shim must not have. Two hashes of different
+ * shape take it to about 1e-29 for the price of 128KB of untouched bss. */
 #define DEDUP_CAP 16384
-static uint64_t dedup_tab[DEDUP_CAP];
+struct dedup_slot {
+    uint64_t h1, h2;
+};
+static struct dedup_slot dedup_tab[DEDUP_CAP];
 static int dedup_count;
 static char dedup_dir[PATH_MAX];
 
-static uint64_t path_hash(const char *s)
+/* FNV-1a and djb2: different shapes, so a pair colliding in both is not
+ * the same event twice. djb2 leaves its entropy low in the word, hence the
+ * splitmix64 finalizer before it is used as half a key. */
+static void path_hash(const char *s, uint64_t *h1, uint64_t *h2)
 {
-    uint64_t h = 1469598103934665603ULL;
+    uint64_t a = 1469598103934665603ULL;
+    uint64_t b = 5381;
     for (; *s; s++) {
-        h ^= (unsigned char)*s;
-        h *= 1099511628211ULL;
+        unsigned char c = (unsigned char)*s;
+        a ^= c;
+        a *= 1099511628211ULL;
+        b = b * 33 + c;
     }
-    return h ? h : 1; /* 0 marks an empty slot */
+    b += 0x9e3779b97f4a7c15ULL;
+    b = (b ^ (b >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    b = (b ^ (b >> 27)) * 0x94d049bb133111ebULL;
+    b ^= b >> 31;
+    *h1 = a ? a : 1; /* 0 marks an empty slot */
+    *h2 = b;
 }
 
 /* returns 1 if `abs` was already saved this command (skip it); otherwise
@@ -412,14 +428,16 @@ static int mod_seen(const char *abs)
     }
     if (dedup_count * 4 >= DEDUP_CAP * 3)
         return 0; /* table nearly full: stop deduping, keep saving */
-    uint64_t h = path_hash(abs);
-    unsigned long i = h & (DEDUP_CAP - 1);
-    while (dedup_tab[i]) {
-        if (dedup_tab[i] == h)
+    uint64_t h1, h2;
+    path_hash(abs, &h1, &h2);
+    unsigned long i = h1 & (DEDUP_CAP - 1);
+    while (dedup_tab[i].h1) {
+        if (dedup_tab[i].h1 == h1 && dedup_tab[i].h2 == h2)
             return 1;
         i = (i + 1) & (DEDUP_CAP - 1);
     }
-    dedup_tab[i] = h;
+    dedup_tab[i].h1 = h1;
+    dedup_tab[i].h2 = h2;
     dedup_count++;
     return 0;
 }
