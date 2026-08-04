@@ -23,12 +23,13 @@ jobs:
         run: go vet ./...
       - name: build
         run: make
+      # before the tests, not after: make test runs the hook smoke tests and
+      # each one skips itself when its shell is missing, so installing these
+      # late would have looked green while testing nothing
+      - name: shells for the hook tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish
       - name: unit and end-to-end tests
         run: make test
-      - name: zsh hook smoke test
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq zsh
-          ./test/hook-zsh.sh
 
   musl:
     # glibc-isms in the shim would surface here; informational for now

@@ -320,8 +320,9 @@ backups.
   Arch, openSUSE, ...). WSL2 counts, it is Linux.
 - **Alpine / musl**: build from source (`make install`, CI-tested); the
   prebuilt shim in releases targets glibc.
-- **Shells**: zsh, bash 5+, fish 3.4+ for the automatic hook. Any shell
-  works with `undo run`. The fish hook is currently untested.
+- **Shells**: zsh, bash 5+, fish 3.4+ for the automatic hook, all three
+  smoke-tested in CI against a real interactive shell. Any shell works
+  with `undo run`.
 - **macOS**: not supported. SIP blocks library injection into system
   binaries, so a port could not cover `rm` and friends.
 - **Windows**: use it inside WSL2.

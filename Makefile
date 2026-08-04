@@ -17,6 +17,10 @@ bin/undo: $(GO_SRC) go.mod
 test: all
 	go test ./...
 	./test/e2e.sh
+	@# each skips itself when that shell is not installed
+	./test/hook.sh zsh
+	./test/hook.sh bash
+	./test/hook.sh fish
 
 install: all
 	install -Dm755 bin/undo $(PREFIX)/bin/undo
