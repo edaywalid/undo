@@ -510,9 +510,28 @@ static int seg_match(const char *abs, const char *seg, size_t seglen)
 
 /* High-churn, always-regenerable trees. Skipped unless the user sets
  * UNDO_DEFAULT_IGNORE=0. Keeps `undo list` and the store free of build
- * noise (a compiler rewriting node_modules should not fill the store). */
+ * noise (a compiler rewriting node_modules should not fill the store).
+ *
+ * Everything here is a name a tool owns and will happily recreate. Names
+ * a person might have chosen for their own source -- dist, build, out,
+ * target, vendor, coverage -- are deliberately absent even though they
+ * hold generated output just as often: an accidental `rm -rf dist` is a
+ * thing people genuinely want back, and a default that silently made it
+ * unrecoverable would be a worse bug than the one this list fixes. They
+ * are in examples/ignore for anyone who wants them.
+ *
+ * Split in two because ignored() runs on every intercepted open, and a
+ * path with no dot-directory in it can skip the whole second list for the
+ * price of one strstr. */
 static const char *const default_ignores[] = {
-    "node_modules", ".cache", "__pycache__", ".git", NULL,
+    "node_modules", "__pycache__", "test-results", "playwright-report", NULL,
+};
+
+static const char *const default_dot_ignores[] = {
+    ".git",   ".cache",        ".turbo",        ".next",     ".nuxt",
+    ".vite",  ".svelte-kit",   ".parcel-cache", ".angular",  ".nx",
+    ".tox",   ".pytest_cache", ".mypy_cache",   ".ruff_cache",
+    ".gradle", ".terraform",   ".dart_tool",    NULL,
 };
 
 /* true if `abs` should not be journaled. Patterns come from
@@ -531,10 +550,16 @@ static int ignored(const char *abs)
             use_default = 0;
     }
 
-    if (use_default)
+    if (use_default) {
         for (int i = 0; default_ignores[i]; i++)
             if (seg_match(abs, default_ignores[i], strlen(default_ignores[i])))
                 return 1;
+        if (strstr(abs, "/.") != NULL)
+            for (int i = 0; default_dot_ignores[i]; i++)
+                if (seg_match(abs, default_dot_ignores[i],
+                              strlen(default_dot_ignores[i])))
+                    return 1;
+    }
 
     for (const char *s = patterns; *s;) {
         const char *end = strchr(s, ':');

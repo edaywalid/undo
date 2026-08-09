@@ -6,22 +6,41 @@
 #               anything under a directory named target, at any depth)
 #   /abs/path   matches that absolute path and everything under it
 #
-# The shim ALWAYS ignores these on top of your list, unless you set
-# UNDO_DEFAULT_IGNORE=0:  node_modules  .cache  __pycache__  .git
+# On top of your list the shim always ignores the tool-owned caches
+# below, unless you set UNDO_DEFAULT_IGNORE=0:
+#
+#   node_modules  __pycache__  test-results  playwright-report
+#   .git  .cache  .turbo  .next  .nuxt  .vite  .svelte-kit
+#   .parcel-cache  .angular  .nx  .tox  .pytest_cache  .mypy_cache
+#   .ruff_cache  .gradle  .terraform  .dart_tool
+#
+# Everything below is opt-in. These names hold generated output most of
+# the time, but people also name their own source directories this, and
+# undo will not make a directory unrecoverable by default on a guess.
 
-# Rust / Go / Java build output
+# Rust / Go / Java / C build output
 target
 build
+out
 
 # Python
 .venv
-.mypy_cache
-.pytest_cache
+venv
 
 # JS/TS
 dist
-.next
-.turbo
+.output
+
+# Test and coverage output
+coverage
+.nyc_output
+
+# Vendored dependencies
+vendor
+
+# A build tool with a non-standard output directory: add it by name.
+# Next.js with a custom distDir, for example.
+# .next-dev
 
 # a specific directory tree, by absolute path
 # /home/you/big-scratch-area
