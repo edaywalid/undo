@@ -32,6 +32,7 @@ type Session struct {
 	UndoneAt time.Time // when the undo happened, zero if not undone
 	Done     bool      // the command finished (done marker present)
 	Pid      int       // shell or runner pid, 0 for pre-lock sessions
+	Degraded string    // why the shim stopped recording, empty if it did not
 	Entries  []journal.Entry
 }
 
@@ -79,6 +80,12 @@ func load(dir string) (*Session, error) {
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "pid")); err == nil {
 		s.Pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	// The shim writes this when it hits the free-space floor or the
+	// session budget. The session is still restorable, it is just not the
+	// whole command, so anything that shows a session has to say so.
+	if b, err := os.ReadFile(filepath.Join(dir, "degraded")); err == nil {
+		s.Degraded = strings.TrimSpace(string(b))
 	}
 	entries, err := journal.Read(filepath.Join(dir, "journal"))
 	if err != nil {

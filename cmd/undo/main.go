@@ -129,6 +129,11 @@ func cmdList() {
 		if s.Undone {
 			mark = "u"
 		}
+		// a partial session restores fine, it just is not the whole
+		// command, and that is not something to find out afterwards
+		if s.Degraded != "" {
+			mark = "!"
+		}
 		cmd := s.Cmd
 		if len(cmd) > 60 {
 			cmd = cmd[:57] + "..."
@@ -153,6 +158,9 @@ func cmdShow(args []string) {
 		fatal(fmt.Errorf("no such session"))
 	}
 	fmt.Printf("session %s (%s)\n$ %s\n\n", shortID(s.ID), when(s.ID), s.Cmd)
+	if s.Degraded != "" {
+		fmt.Printf("  ! %s\n  ! changes after that point were not recorded\n\n", s.Degraded)
+	}
 	for i, e := range s.Entries {
 		fmt.Printf("  %2d  %s\n", i+1, e.Describe())
 	}
@@ -223,6 +231,11 @@ func cmdApply(s *session.Session, dir restore.Direction, opts restore.Options, y
 				"  rm x\n  undo"))
 		}
 		fatal(fmt.Errorf("the command may still be running (pid %d); --force to override", s.Pid))
+	}
+	if s.Degraded != "" && dir == restore.Undo {
+		fmt.Fprintf(os.Stderr, "warning: %s\n"+
+			"warning: this session is incomplete; changes after that point"+
+			" cannot be reverted\n", s.Degraded)
 	}
 	if dir == restore.Undo && s.Undone {
 		fatal(fmt.Errorf("session was already undone (undo redo %s to re-apply)", shortID(s.ID)))
