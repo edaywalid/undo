@@ -53,7 +53,7 @@ jobs:
       - name: build shim and check its glibc floor
         run: |
           mkdir -p build
-          gcc -shared -fPIC -O2 -Wall -o build/libundo.so shim/undo_shim.c -ldl
+          gcc -shared -fPIC -O2 -Wall -o build/libundo.so shim/undo_shim.c -ldl -lpthread
           max=$(objdump -T build/libundo.so | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tail -1)
           echo "highest glibc symbol required: $max"
           # even built on a modern runner, nothing newer than 2.34 (dlsym)

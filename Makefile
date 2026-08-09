@@ -8,7 +8,7 @@ all: bin/undo build/libundo.so
 
 build/libundo.so: shim/undo_shim.c
 	@mkdir -p build
-	$(CC) -shared -fPIC -O2 -Wall -Wextra -o $@ $< -ldl
+	$(CC) -shared -fPIC -O2 -Wall -Wextra -o $@ $< -ldl -lpthread
 
 bin/undo: $(GO_SRC) go.mod
 	@mkdir -p bin

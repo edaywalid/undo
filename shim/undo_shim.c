@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,6 +40,9 @@
 
 static __thread int in_shim;
 
+/* asks for a thread-exit callback; defined with the cleanup itself below */
+static void tls_arm(void);
+
 #define REAL(name, ret, ...)                                                 \
     static ret (*real_##name)(__VA_ARGS__);                                  \
     if (!real_##name)                                                        \
@@ -54,25 +58,29 @@ static const char *session_dir(void)
     return s;
 }
 
+/* File scope, not function scope, so thread_cleanup() can reach them. */
+static __thread char jrn_dir[PATH_MAX];
+static __thread int jrn_fd = -1;
+
 static int journal_fd(void)
 {
-    static __thread char cached_dir[PATH_MAX];
-    static __thread int fd = -1;
     const char *dir = session_dir();
     if (!dir)
         return -1;
-    if (fd >= 0 && strcmp(cached_dir, dir) == 0)
-        return fd;
-    if (fd >= 0)
-        close(fd);
+    if (jrn_fd >= 0 && strcmp(jrn_dir, dir) == 0)
+        return jrn_fd;
+    if (jrn_fd >= 0)
+        close(jrn_fd);
     char path[PATH_MAX];
     if ((size_t)snprintf(path, sizeof path, "%s/journal", dir) >= sizeof path)
-        return fd = -1;
+        return jrn_fd = -1;
     REAL(open, int, const char *, int, ...);
-    fd = real_open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
-    if (fd >= 0)
-        snprintf(cached_dir, sizeof cached_dir, "%s", dir);
-    return fd;
+    jrn_fd = real_open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+    if (jrn_fd >= 0) {
+        snprintf(jrn_dir, sizeof jrn_dir, "%s", dir);
+        tls_arm();
+    }
+    return jrn_fd;
 }
 
 static int armed(void)
@@ -252,18 +260,20 @@ struct budget {
     uint32_t stopped; /* set once, by whoever trips a ceiling first */
 };
 
+/* file scope for the same reason as the journal descriptor above */
+static __thread char bgt_dir[PATH_MAX];
+static __thread struct budget *bgt_map;
+
 static struct budget *budget_map(void)
 {
-    static __thread char cached_dir[PATH_MAX];
-    static __thread struct budget *map;
     const char *dir = session_dir();
     if (!dir)
         return NULL;
-    if (map && strcmp(cached_dir, dir) == 0)
-        return map;
-    if (map) {
-        munmap(map, sizeof *map);
-        map = NULL;
+    if (bgt_map && strcmp(bgt_dir, dir) == 0)
+        return bgt_map;
+    if (bgt_map) {
+        munmap(bgt_map, sizeof *bgt_map);
+        bgt_map = NULL;
     }
     char path[PATH_MAX];
     if ((size_t)snprintf(path, sizeof path, "%s/budget", dir) >= sizeof path)
@@ -277,18 +287,56 @@ static struct budget *budget_map(void)
     struct stat st;
     REAL(ftruncate, int, int, off_t);
     if (fstat(fd, &st) != 0 ||
-        (st.st_size < (off_t)sizeof *map &&
-         real_ftruncate(fd, (off_t)sizeof *map) != 0)) {
+        (st.st_size < (off_t)sizeof *bgt_map &&
+         real_ftruncate(fd, (off_t)sizeof *bgt_map) != 0)) {
         close(fd);
         return NULL;
     }
-    void *p = mmap(NULL, sizeof *map, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *p = mmap(NULL, sizeof *bgt_map, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   fd, 0);
     close(fd);
     if (p == MAP_FAILED)
         return NULL;
-    map = p;
-    snprintf(cached_dir, sizeof cached_dir, "%s", dir);
-    return map;
+    bgt_map = p;
+    snprintf(bgt_dir, sizeof bgt_dir, "%s", dir);
+    tls_arm();
+    return bgt_map;
+}
+
+/* A thread that exits takes its TLS variables with it, but not the
+ * descriptor and the mapping they point at: those belong to the process
+ * and stay until it dies. A program that does its file work on
+ * short-lived threads therefore leaked a journal descriptor and a page
+ * per thread, until it ran out of descriptors. Nothing here is shared
+ * between threads, so this is a release, not a synchronisation problem.
+ *
+ * A key destructor is the only thread-exit hook C gives us. */
+static pthread_key_t tls_key;
+static pthread_once_t tls_once = PTHREAD_ONCE_INIT;
+
+static void thread_cleanup(void *unused)
+{
+    (void)unused;
+    if (jrn_fd >= 0) {
+        close(jrn_fd);
+        jrn_fd = -1;
+    }
+    if (bgt_map) {
+        munmap(bgt_map, sizeof *bgt_map);
+        bgt_map = NULL;
+    }
+}
+
+static void tls_key_init(void)
+{
+    pthread_key_create(&tls_key, thread_cleanup);
+}
+
+static void tls_arm(void)
+{
+    pthread_once(&tls_once, tls_key_init);
+    /* the value is only a flag: glibc skips the destructor for a NULL one */
+    pthread_setspecific(tls_key, (void *)1);
 }
 
 /* Records why recording stopped, once per session. Called before the

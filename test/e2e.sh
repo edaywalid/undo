@@ -338,5 +338,68 @@ sess=$UNDO_DATA_DIR/sessions/$last
 grep -q UNDO_MIN_FREE "$sess/degraded" || fail "floor did not report itself"
 [[ ! -s $sess/journal ]] || fail "journal grew after the floor was hit"
 
+echo "== case 28: threads do not leak a journal descriptor each"
+# The journal descriptor is per-thread. A thread that exits takes the
+# variable holding it, not the descriptor, so a program doing its file
+# work on short-lived threads used to leak one per thread until it hit
+# EMFILE. 205 threads leaked 205 descriptors before this was fixed.
+cat >"$WORK/thr.c" <<'CEOF'
+#include <dirent.h>
+#include <pthread.h>
+#include <stdio.h>
+
+static char *dir;
+
+static void *work(void *arg)
+{
+    char p[512];
+    snprintf(p, sizeof p, "%s/t%ld", dir, (long)arg);
+    FILE *f = fopen(p, "w");
+    if (f) {
+        fputs("x\n", f);
+        fclose(f);
+    }
+    return NULL;
+}
+
+static int openfds(void)
+{
+    DIR *d = opendir("/proc/self/fd");
+    struct dirent *e;
+    int n = 0;
+    if (!d)
+        return -1;
+    while ((e = readdir(d)) != NULL)
+        if (e->d_name[0] != '.')
+            n++;
+    closedir(d);
+    return n;
+}
+
+int main(int c, char **v)
+{
+    (void)c;
+    dir = v[1];
+    pthread_t t;
+    for (long i = 0; i < 5; i++) {
+        pthread_create(&t, 0, work, (void *)i);
+        pthread_join(t, 0);
+    }
+    int before = openfds();
+    for (long i = 5; i < 205; i++) {
+        pthread_create(&t, 0, work, (void *)i);
+        pthread_join(t, 0);
+    }
+    /* a couple of descriptors of slack, none of it proportional to 200 */
+    return openfds() > before + 2;
+}
+CEOF
+if cc -O2 -o "$WORK/thr" "$WORK/thr.c" -lpthread 2>/dev/null; then
+    mkdir -p "$PLAY/threads"
+    run_armed "$WORK/thr $PLAY/threads" || fail "threads leaked journal descriptors"
+else
+    echo "   (no cc, skipped)"
+fi
+
 echo
 echo "all cases passed"

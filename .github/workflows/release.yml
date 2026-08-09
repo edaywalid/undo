@@ -26,8 +26,8 @@ jobs:
           mkdir -p build
           docker run --rm -v "$PWD:/w" -w /w debian:11 bash -c '
             apt-get update -qq && apt-get install -y -qq gcc gcc-aarch64-linux-gnu binutils
-            gcc -shared -fPIC -O2 -Wall -o build/libundo_amd64.so shim/undo_shim.c -ldl
-            aarch64-linux-gnu-gcc -shared -fPIC -O2 -Wall -o build/libundo_arm64.so shim/undo_shim.c -ldl
+            gcc -shared -fPIC -O2 -Wall -o build/libundo_amd64.so shim/undo_shim.c -ldl -lpthread
+            aarch64-linux-gnu-gcc -shared -fPIC -O2 -Wall -o build/libundo_arm64.so shim/undo_shim.c -ldl -lpthread
           '
       - name: assert the shims load on old distros
         run: |
