@@ -9,8 +9,8 @@
   that ran all day and never did. Nothing was ever going to prune the one
   session that was growing, and `gc` skips live sessions anyway. Two
   ceilings now live in the shim, checked as it writes: `UNDO_MIN_FREE`
-  (2 GiB, a floor on free space) and `UNDO_MAX_SESSION` (1 GiB per
-  command). Whichever trips first, that session stops recording and says
+  (2 GiB, a floor on free space) and `UNDO_MAX_SESSION` (half of
+  `UNDO_MAX_STORE`, so the store has room for more than one session). Whichever trips first, that session stops recording and says
   so at the next prompt; `undo list` marks it `!` and `undo show`
   explains the gap. The command itself is never blocked.
 - `UNDO_MAX_BYTES` did not apply to deletions. A hardlink copies no data,

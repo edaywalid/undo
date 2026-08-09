@@ -401,5 +401,33 @@ else
     echo "   (no cc, skipped)"
 fi
 
+echo "== case 29: the session budget is shared across processes"
+# The whole point of keeping the counter in a shared mapping rather than a
+# static: a build forks a thousand compilers and they all bill to one
+# session. Five separate rm processes here, one file each. Per-process
+# counters would let every one of them through.
+mkdir -p "$PLAY/procs"
+for i in 1 2 3 4 5; do head -c 400000 /dev/zero >"$PLAY/procs/f$i"; done
+UNDO_MAX_SESSION=1000000 run_armed \
+    "rm $PLAY/procs/f1; rm $PLAY/procs/f2; rm $PLAY/procs/f3; rm $PLAY/procs/f4; rm $PLAY/procs/f5"
+last=$(ls "$UNDO_DATA_DIR/sessions" | sort | tail -1)
+sess=$UNDO_DATA_DIR/sessions/$last
+n=$(grep -c . "$sess/journal" 2>/dev/null || echo 0)
+((n > 0 && n < 5)) || fail "expected the budget to bind across processes, got $n entries"
+[[ -s $sess/degraded ]] || fail "no degraded marker from the multi-process run"
+du_kb=$(du -sk "$sess" | cut -f1)
+((du_kb < 2000)) || fail "session grew to ${du_kb}K past a 1MB budget"
+
+echo "== case 30: the per-session default follows the store budget"
+# UNDO_MAX_SESSION unset: the cap is half of UNDO_MAX_STORE, so the store
+# has room for more than one session. A tiny store here makes it visible.
+mkdir -p "$PLAY/derived"
+for i in 1 2 3; do head -c 300000 /dev/zero >"$PLAY/derived/f$i"; done
+UNDO_MAX_STORE=1000000 run_armed "rm $PLAY/derived/f1 $PLAY/derived/f2 $PLAY/derived/f3"
+last=$(ls "$UNDO_DATA_DIR/sessions" | sort | tail -1)
+sess=$UNDO_DATA_DIR/sessions/$last
+grep -q UNDO_MAX_SESSION "$sess/degraded" 2>/dev/null ||
+    fail "a 500K derived cap should have stopped a 900K delete"
+
 echo
 echo "all cases passed"
