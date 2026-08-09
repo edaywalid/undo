@@ -133,8 +133,20 @@ func reportStore(report func(checkState, string, string), root string) {
 	report(pass, "store", root)
 }
 
+// builtinIgnores mirrors default_ignores and default_dot_ignores in
+// shim/undo_shim.c. TestBuiltinIgnoresMatchShim parses the C source and
+// fails if the two drift, which is how this list went stale last time.
+var builtinIgnores = []string{
+	"node_modules", "__pycache__", "test-results", "playwright-report",
+	".git", ".cache", ".turbo", ".next", ".nuxt", ".vite", ".svelte-kit",
+	".parcel-cache", ".angular", ".nx", ".tox", ".pytest_cache",
+	".mypy_cache", ".ruff_cache", ".gradle", ".terraform", ".dart_tool",
+}
+
 func reportIgnore(report func(checkState, string, string)) {
-	defaults := "node_modules, .cache, __pycache__, .git (built in)"
+	// too many to spell out on one line; the README has the full list
+	defaults := fmt.Sprintf("%d tool caches built in (%s, ...)",
+		len(builtinIgnores), strings.Join(builtinIgnores[:4], ", "))
 	if extra := os.Getenv("UNDO_IGNORE"); extra != "" {
 		n := len(strings.Split(extra, ":"))
 		report(pass, "ignore", fmt.Sprintf("%d extra pattern(s) from config; %s", n, defaults))
