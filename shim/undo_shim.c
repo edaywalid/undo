@@ -32,8 +32,11 @@
 #endif
 
 #define DEFAULT_MAX_BYTES (256UL * 1024 * 1024)
-#define DEFAULT_MAX_SESSION (1UL << 30)
 #define DEFAULT_MIN_FREE (2UL << 30)
+
+/* Mirrors the UNDO_MAX_STORE default in cmd/undo/main.go. The shim only
+ * reads it to size the per-session cap; gc is what enforces it. */
+#define DEFAULT_MAX_STORE (1UL << 30)
 
 /* how many bytes of backups may go by between two statvfs calls */
 #define FREE_CHECK_INTERVAL (64UL << 20)
@@ -62,9 +65,8 @@ static const char *session_dir(void)
 static __thread char jrn_dir[PATH_MAX];
 static __thread int jrn_fd = -1;
 
-static int journal_fd(void)
+static int journal_fd(const char *dir)
 {
-    const char *dir = session_dir();
     if (!dir)
         return -1;
     if (jrn_fd >= 0 && strcmp(jrn_dir, dir) == 0)
@@ -108,18 +110,23 @@ static void enc_append(char *dst, size_t cap, size_t *len, const char *s)
     }
 }
 
-static int recording_stopped(void);
+static int recording_stopped(const char *dir);
 
 /* jwrite("op", field1, field2, NULL) */
 static void jwrite(const char *op, ...)
 {
+    /* One getenv for the pair below, not one each: this runs for every
+     * journal line and getenv walks environ. */
+    const char *dir = session_dir();
+    if (!dir)
+        return;
     /* Once a ceiling has been hit the journal stops growing too. It is
      * small next to the backups, but the point of the free-space floor is
      * that undo stops touching a filesystem in trouble, and a record of
      * changes whose backups were never taken is not worth a byte of it. */
-    if (recording_stopped())
+    if (recording_stopped(dir))
         return;
-    int fd = journal_fd();
+    int fd = journal_fd(dir);
     if (fd < 0)
         return;
     char line[4 * PATH_MAX];
@@ -229,14 +236,47 @@ static unsigned long max_bytes(void)
     return v;
 }
 
-/* A limit read from the environment, where an explicit 0 means no limit.
- * Distinct from max_bytes() above, whose 0 has always meant "unset". */
-static unsigned long limit_env(const char *name, unsigned long def)
+/* A limit read from the environment once and remembered, where an
+ * explicit 0 means no limit. Distinct from max_bytes() above, whose 0 has
+ * always meant "unset", which is why that one cannot express "unlimited".
+ *
+ * Cached because these are read on every backup, and getenv walks environ
+ * each time. Nothing changes UNDO_* mid-process except the session, which
+ * is read separately. */
+static unsigned long min_free(void)
 {
-    const char *s = getenv(name);
-    if (!s || !*s)
-        return def;
-    return parse_ulong(s);
+    static unsigned long v;
+    static int loaded;
+    if (!loaded) {
+        loaded = 1;
+        const char *s = getenv("UNDO_MIN_FREE");
+        v = (!s || !*s) ? DEFAULT_MIN_FREE : parse_ulong(s);
+    }
+    return v;
+}
+
+/* Default: half the store budget, so the store can hold more than one
+ * session. A per-session cap equal to the whole store budget means one
+ * large command evicts every other session the moment gc runs, which is
+ * a coincidence of two numbers rather than a decision. Following
+ * UNDO_MAX_STORE also means raising the store budget raises this. */
+static unsigned long max_session(void)
+{
+    static unsigned long v;
+    static int loaded;
+    if (!loaded) {
+        loaded = 1;
+        const char *s = getenv("UNDO_MAX_SESSION");
+        if (s && *s) {
+            v = parse_ulong(s);
+            return v;
+        }
+        const char *st = getenv("UNDO_MAX_STORE");
+        unsigned long store =
+            (st && *st) ? parse_ulong(st) : DEFAULT_MAX_STORE;
+        v = store / 2;
+    }
+    return v;
 }
 
 /* ---------- space guards ---------- */
@@ -256,17 +296,17 @@ static unsigned long limit_env(const char *name, unsigned long def)
  * The counter lives in a shared mapping, not a static, so the thousand
  * compilers a build forks all bill to the same session budget. */
 struct budget {
-    uint64_t saved;   /* bytes of backups written by every process */
-    uint32_t stopped; /* set once, by whoever trips a ceiling first */
+    uint64_t saved;       /* bytes of backups written by every process */
+    uint64_t since_check; /* bytes since the last statvfs, shared */
+    uint32_t stopped;     /* set once, by whoever trips a ceiling first */
 };
 
 /* file scope for the same reason as the journal descriptor above */
 static __thread char bgt_dir[PATH_MAX];
 static __thread struct budget *bgt_map;
 
-static struct budget *budget_map(void)
+static struct budget *budget_map(const char *dir)
 {
-    const char *dir = session_dir();
     if (!dir)
         return NULL;
     if (bgt_map && strcmp(bgt_dir, dir) == 0)
@@ -341,19 +381,20 @@ static void tls_arm(void)
 
 /* Records why recording stopped, once per session. Called before the
  * filesystem is actually full, so this small write still has room. */
-static void budget_stop(const char *why)
+static void budget_stop(const char *dir, const char *why)
 {
-    struct budget *b = budget_map();
+    struct budget *b = budget_map(dir);
     if (b && __atomic_exchange_n(&b->stopped, 1, __ATOMIC_RELAXED))
         return; /* someone else already wrote the marker */
-    const char *dir = session_dir();
     if (!dir)
         return;
     char path[PATH_MAX];
     if ((size_t)snprintf(path, sizeof path, "%s/degraded", dir) >= sizeof path)
         return;
+    /* O_EXCL so this really is once per session even when the mapping
+     * above could not be made and every process reaches this point */
     REAL(open, int, const char *, int, ...);
-    int fd = real_open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    int fd = real_open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0)
         return;
     char msg[512];
@@ -365,21 +406,21 @@ static void budget_stop(const char *why)
     close(fd);
 }
 
-static int recording_stopped(void)
+static int recording_stopped(const char *dir)
 {
-    struct budget *b = budget_map();
+    struct budget *b = budget_map(dir);
     return b && __atomic_load_n(&b->stopped, __ATOMIC_RELAXED);
 }
 
 /* true if `want` more bytes of backup are affordable */
-static int budget_ok(unsigned long want)
+static int budget_ok(const char *dir, unsigned long want)
 {
-    struct budget *b = budget_map();
+    struct budget *b = budget_map(dir);
     if (b && __atomic_load_n(&b->stopped, __ATOMIC_RELAXED))
         return 0;
 
     char why[512];
-    unsigned long cap = limit_env("UNDO_MAX_SESSION", DEFAULT_MAX_SESSION);
+    unsigned long cap = max_session();
     if (b && cap) {
         unsigned long used = __atomic_load_n(&b->saved, __ATOMIC_RELAXED);
         if (used + want > cap) {
@@ -387,43 +428,52 @@ static int budget_ok(unsigned long want)
                      "stopped recording: session reached the %lu MB budget "
                      "(UNDO_MAX_SESSION)",
                      (cap + (1UL << 19)) >> 20);
-            budget_stop(why);
+            budget_stop(dir, why);
             return 0;
         }
     }
 
-    unsigned long floor = limit_env("UNDO_MIN_FREE", DEFAULT_MIN_FREE);
+    unsigned long floor = min_free();
     if (!floor)
         return 1;
+
     /* statvfs on every backup would be wasteful and on none would be
-     * useless; amortise it over the bytes actually written. Starting at
-     * the interval forces a check before the first backup of a session,
-     * so a session opened on an already-full disk never gets going. */
-    static __thread unsigned long since = FREE_CHECK_INTERVAL;
-    since += want;
-    if (since < FREE_CHECK_INTERVAL)
-        return 1;
-    since = 0;
-    const char *dir = session_dir();
+     * useless, so amortise it over the bytes actually written. The
+     * counter lives in the shared mapping: per-thread, every thread got
+     * its own 64M of slack and a busy process checked far more often
+     * than intended while a session spread over many processes checked
+     * far less. The first backup of a session always checks, so a
+     * session opened on an already-full disk never gets going. */
+    if (b) {
+        uint64_t used = __atomic_load_n(&b->saved, __ATOMIC_RELAXED);
+        uint64_t since =
+            __atomic_add_fetch(&b->since_check, want, __ATOMIC_RELAXED);
+        if (used != 0 && since < FREE_CHECK_INTERVAL)
+            return 1;
+        __atomic_store_n(&b->since_check, 0, __ATOMIC_RELAXED);
+    }
+    /* no mapping: cannot amortise, so pay for the check every time */
+
     struct statvfs vfs;
     if (!dir || statvfs(dir, &vfs) != 0)
         return 1; /* cannot tell: let the session budget do the limiting */
-    unsigned long avail = (unsigned long)vfs.f_bavail * (unsigned long)vfs.f_frsize;
+    unsigned long avail =
+        (unsigned long)vfs.f_bavail * (unsigned long)vfs.f_frsize;
     if (avail < floor + want) {
         snprintf(why, sizeof why,
                  "stopped recording: %lu MB free on the store's filesystem, "
                  "floor is %lu MB (UNDO_MIN_FREE)",
                  (avail + (1UL << 19)) >> 20,
                  (floor + (1UL << 19)) >> 20);
-        budget_stop(why);
+        budget_stop(dir, why);
         return 0;
     }
     return 1;
 }
 
-static void budget_add(unsigned long n)
+static void budget_add(const char *dir, unsigned long n)
 {
-    struct budget *b = budget_map();
+    struct budget *b = budget_map(dir);
     if (b)
         __atomic_add_fetch(&b->saved, (uint64_t)n, __ATOMIC_RELAXED);
 }
@@ -507,7 +557,8 @@ static int save_file(const char *abs, int need_copy, char *bak)
         errno = EFBIG;
         return -1;
     }
-    if (!budget_ok((unsigned long)st.st_size)) {
+    const char *dir = session_dir();
+    if (!budget_ok(dir, (unsigned long)st.st_size)) {
         errno = ENOSPC;
         return -1;
     }
@@ -520,7 +571,7 @@ static int save_file(const char *abs, int need_copy, char *bak)
         if (!need_copy) {
             REAL(link, int, const char *, const char *);
             if (real_link(abs, bak) == 0) {
-                budget_add((unsigned long)st.st_size);
+                budget_add(dir, (unsigned long)st.st_size);
                 return 0;
             }
             if (errno == EEXIST)
@@ -528,7 +579,7 @@ static int save_file(const char *abs, int need_copy, char *bak)
             /* cross-device etc: fall through to a copy under this name */
         }
         if (copy_file(abs, bak) == 0) {
-            budget_add((unsigned long)st.st_size);
+            budget_add(dir, (unsigned long)st.st_size);
             return 0;
         }
         if (errno != EEXIST)

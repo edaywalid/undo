@@ -229,7 +229,7 @@ is exactly what keeps the original ones from being freed.
 | Limit | Default | Meaning |
 | --- | --- | --- |
 | `UNDO_MIN_FREE` | 2 GiB | free space undo refuses to eat into. Checked against the store's filesystem as backups are written. |
-| `UNDO_MAX_SESSION` | 1 GiB | how much one command may record. |
+| `UNDO_MAX_SESSION` | half of `UNDO_MAX_STORE` (512 MiB) | how much one command may record. Derived so the store has room for more than one session. |
 
 Hit either and the session stops recording, writes down why, and says so
 at your next prompt. `undo list` marks it `!` and `undo show` explains
@@ -315,7 +315,7 @@ Environment variables, set before sourcing the hook:
 | `UNDO_MAX_STORE` | 1 GiB | total store size budget in bytes; oldest pruned first |
 | `UNDO_MAX_BYTES` | 256 MiB | largest file the shim will back up, for deletions as well as overwrites |
 | `UNDO_MIN_FREE` | 2 GiB | stop recording when the store's filesystem has less than this free; `0` disables |
-| `UNDO_MAX_SESSION` | 1 GiB | stop recording when one command has stored this much; `0` disables |
+| `UNDO_MAX_SESSION` | half of `UNDO_MAX_STORE` | stop recording when one command has stored this much; `0` disables |
 | `UNDO_DATA_DIR` | `~/.local/share/undo` | where sessions live |
 | `UNDO_IGNORE` | from config file | colon-separated ignore patterns, overrides `~/.config/undo/ignore` |
 | `UNDO_IGNORE_FILE` | `~/.config/undo/ignore` | where the ignore list is read from |
