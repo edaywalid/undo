@@ -75,6 +75,7 @@ whole storage format is plain files you can inspect:
     ├── cmd        rm -rf thesis/          the command line, for `undo list`
     ├── journal    one line per change     replayed in reverse
     ├── pid, done  liveness markers        so undo won't touch a running command
+    ├── budget     bytes stored so far     shared by every process in the session
     └── data/
         ├── 48211-1   = thesis/draft.md    (hardlink, no data copied)
         └── 48211-2   = thesis/refs.bib
@@ -219,10 +220,28 @@ If you deleted something specifically to free disk, run `undo purge`.
 **Overwriting a file in place does cost disk.** A hardlink cannot
 preserve content that is about to be rewritten, so for `>` truncation,
 editors, and `shred`, undo copies the previous version. That copy is real
-new space, capped per file by `UNDO_MAX_BYTES` (256 MiB default).
+new space, capped per file by `UNDO_MAX_BYTES` (256 MiB default). The
+same cap applies to deletions: the hardlink costs no new blocks, but it
+is exactly what keeps the original ones from being freed.
 
-**Nothing grows without bound.** After every command undo prunes the
-store:
+**Two ceilings apply while a command runs**, enforced by the shim itself:
+
+| Limit | Default | Meaning |
+| --- | --- | --- |
+| `UNDO_MIN_FREE` | 2 GiB | free space undo refuses to eat into. Checked against the store's filesystem as backups are written. |
+| `UNDO_MAX_SESSION` | 1 GiB | how much one command may record. |
+
+Hit either and the session stops recording, writes down why, and says so
+at your next prompt. `undo list` marks it `!` and `undo show` explains
+the gap. The command itself is never blocked or slowed down; undo only
+ever stops recording it.
+
+This matters most for commands that do not return for hours: an editor,
+a dev server, an agent. The store-wide limits below only get a turn
+between commands, so before this they simply never ran for the session
+that was actually growing.
+
+**Two more apply between commands**, when the prompt comes back:
 
 | Limit | Default | Meaning |
 | --- | --- | --- |
@@ -260,9 +279,21 @@ and SSDs, which its own man page explains.
 
 A command that rewrites thousands of files (a package install, a build)
 would otherwise flood `undo list` and the store with churn you will never
-revert. The shim always skips `node_modules`, `.cache`, `__pycache__`,
-and `.git`, and collapses repeated writes to the same file within one
-command down to a single backup. Add your own patterns in
+revert. The shim always skips the caches that build tools own and
+recreate:
+
+```
+node_modules  __pycache__  test-results  playwright-report
+.git  .cache  .turbo  .next  .nuxt  .vite  .svelte-kit  .parcel-cache
+.angular  .nx  .tox  .pytest_cache  .mypy_cache  .ruff_cache
+.gradle  .terraform  .dart_tool
+```
+
+It also collapses repeated writes to the same file within one command
+down to a single backup. Names you might have picked yourself, like
+`dist`, `build`, `target` or `vendor`, are deliberately not built in:
+they hold generated output most of the time, but an accidental
+`rm -rf dist` is a thing people want back. Add your own patterns in
 `~/.config/undo/ignore` (see [`examples/ignore`](examples/ignore)):
 
 ```
@@ -282,11 +313,13 @@ Environment variables, set before sourcing the hook:
 | --- | --- | --- |
 | `UNDO_KEEP` | `30` | how many commands are kept (see [storage](#storage-and-disk-space)) |
 | `UNDO_MAX_STORE` | 1 GiB | total store size budget in bytes; oldest pruned first |
-| `UNDO_MAX_BYTES` | 256 MiB | largest file the shim will copy for an in-place overwrite; deletions are hardlinked with no size limit |
+| `UNDO_MAX_BYTES` | 256 MiB | largest file the shim will back up, for deletions as well as overwrites |
+| `UNDO_MIN_FREE` | 2 GiB | stop recording when the store's filesystem has less than this free; `0` disables |
+| `UNDO_MAX_SESSION` | 1 GiB | stop recording when one command has stored this much; `0` disables |
 | `UNDO_DATA_DIR` | `~/.local/share/undo` | where sessions live |
 | `UNDO_IGNORE` | from config file | colon-separated ignore patterns, overrides `~/.config/undo/ignore` |
 | `UNDO_IGNORE_FILE` | `~/.config/undo/ignore` | where the ignore list is read from |
-| `UNDO_DEFAULT_IGNORE` | on | set to `0` to stop skipping `node_modules`, `.cache`, `__pycache__`, `.git` |
+| `UNDO_DEFAULT_IGNORE` | on | set to `0` to stop skipping the built-in cache directories |
 | `UNDO_CAPTURE_SHELL` | off | zsh only: set to `1` to re-exec once at startup with the shim preloaded, so the shell's own redirections (`echo x > file`) are captured too |
 | `UNDO_LIB` | auto-detected | explicit path to `libundo.so` |
 

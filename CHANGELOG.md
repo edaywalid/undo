@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- undo could fill a disk. One session grew to 147G over 23 hours and took
+  a 320G filesystem to zero bytes free, which broke every other program on
+  the machine. The size budget was enforced by `undo gc`, which the shell
+  hook only calls when a command returns; the command here was an agent
+  that ran all day and never did. Nothing was ever going to prune the one
+  session that was growing, and `gc` skips live sessions anyway. Two
+  ceilings now live in the shim, checked as it writes: `UNDO_MIN_FREE`
+  (2 GiB, a floor on free space) and `UNDO_MAX_SESSION` (1 GiB per
+  command). Whichever trips first, that session stops recording and says
+  so at the next prompt; `undo list` marks it `!` and `undo show`
+  explains the gap. The command itself is never blocked.
+- `UNDO_MAX_BYTES` did not apply to deletions. A hardlink copies no data,
+  so the per-file cap skipped it, but the link is exactly what stops the
+  original blocks being freed when the file is unlinked. Deleting a 4G
+  file cost 4G that the cap was supposed to have refused.
+- The built-in ignore list missed the caches that churn hardest.
+  `.turbo/cache` never matched the `.cache` pattern, because patterns
+  match whole path components. Added `.turbo`, `.next`, `.nuxt`, `.vite`,
+  `.svelte-kit`, `.parcel-cache`, `.angular`, `.nx`, `.tox`,
+  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.terraform`,
+  `.dart_tool`, `test-results` and `playwright-report`. `dist`, `build`,
+  `target` and `vendor` stay opt-in in `examples/ignore`: they hold
+  generated output most of the time, but an accidental `rm -rf dist` is
+  something people want back.
+- The shell hook wrote its done marker without checking the session
+  directory still existed, so a store removed underneath it made every
+  later prompt print `no such file or directory`. Fixed in all three
+  shells.
+
 ## v0.2.9 - 2026-08-02
 
 - The shim could stop journaling partway through a command with no sign
