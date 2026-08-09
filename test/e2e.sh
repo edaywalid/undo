@@ -308,5 +308,35 @@ else
     echo "   (no cc, skipped)"
 fi
 
+echo "== case 26: the session budget stops recording and says so"
+mkdir -p "$PLAY/big"
+for i in 1 2 3 4 5; do head -c 400000 /dev/zero >"$PLAY/big/f$i"; done
+UNDO_MAX_SESSION=1000000 run_armed "rm $PLAY/big/f1 $PLAY/big/f2 $PLAY/big/f3 $PLAY/big/f4 $PLAY/big/f5"
+last=$(ls "$UNDO_DATA_DIR/sessions" | sort | tail -1)
+sess=$UNDO_DATA_DIR/sessions/$last
+[[ -s $sess/degraded ]] || fail "no degraded marker after blowing the budget"
+grep -q UNDO_MAX_SESSION "$sess/degraded" || fail "degraded marker blames the wrong limit"
+# the rm itself must still have happened: the shim records, it never vetoes
+[[ ! -e $PLAY/big/f5 ]] || fail "shim blocked the command it could not record"
+n=$(grep -c . "$sess/journal")
+((n > 0 && n < 5)) || fail "expected a partial journal, got $n entries"
+du_kb=$(du -sk "$sess" | cut -f1)
+((du_kb < 2000)) || fail "session grew to ${du_kb}K past a 1MB budget"
+"$UNDO" list | grep -q "^! " || fail "undo list does not flag the degraded session"
+"$UNDO" show | grep -qi "not recorded" || fail "undo show does not explain the gap"
+"$UNDO" -y >/dev/null 2>&1
+[[ -e $PLAY/big/f1 ]] || fail "the part that was recorded did not restore"
+
+echo "== case 27: the free-space floor stops recording"
+echo keepme >"$PLAY/floor.txt"
+# no real disk gets filled here: the floor is set above any plausible
+# free space, so the very first backup trips it
+UNDO_MIN_FREE=999999999999999 run_armed "rm $PLAY/floor.txt"
+last=$(ls "$UNDO_DATA_DIR/sessions" | sort | tail -1)
+sess=$UNDO_DATA_DIR/sessions/$last
+[[ ! -e $PLAY/floor.txt ]] || fail "rm did not run"
+grep -q UNDO_MIN_FREE "$sess/degraded" || fail "floor did not report itself"
+[[ ! -s $sess/journal ]] || fail "journal grew after the floor was hit"
+
 echo
 echo "all cases passed"
