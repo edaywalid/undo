@@ -110,7 +110,9 @@ func List() ([]*Session, error) {
 	}
 	names := make([]string, 0, len(dirs))
 	for _, d := range dirs {
-		if d.IsDir() {
+		// Remove renames before it deletes; a leftover means a removal
+		// died partway and the tree is rubbish, not a session.
+		if d.IsDir() && !strings.HasSuffix(d.Name(), removingSuffix) {
 			names = append(names, d.Name())
 		}
 	}
@@ -293,9 +295,28 @@ func GC(keep int, maxBytes int64) (int, error) {
 	return removed, nil
 }
 
+// the name a session is parked under while it is being deleted
+const removingSuffix = ".removing"
+
 // Remove deletes a session and its backups entirely.
+//
+// The rename comes first because a session whose writer is still running
+// recreates files as fast as RemoveAll unlinks them: the shim saves each
+// backup into the directory being deleted, and RemoveAll gives up with
+// "directory not empty" having already destroyed most of it. Renaming
+// takes the whole tree out from under the shim in one step. The writer
+// carries on appending to a path nobody will ever read, and the delete
+// that follows races with nothing.
 func (s *Session) Remove() error {
-	return os.RemoveAll(s.Dir)
+	doomed := s.Dir + removingSuffix
+	if err := os.RemoveAll(doomed); err != nil {
+		return os.RemoveAll(s.Dir)
+	}
+	if err := os.Rename(s.Dir, doomed); err != nil {
+		// already gone, or a filesystem that will not have it
+		return os.RemoveAll(s.Dir)
+	}
+	return os.RemoveAll(doomed)
 }
 
 // MarkUndone records that a session was reverted, and when.
