@@ -26,6 +26,16 @@
   `target` and `vendor` stay opt-in in `examples/ignore`: they hold
   generated output most of the time, but an accidental `rm -rf dist` is
   something people want back.
+- The shim leaked a journal descriptor and a mapped page per thread. Both
+  are thread-local, and a thread that exits takes the variable holding
+  them but not the descriptor or the page itself, so a program doing its
+  file work on short-lived threads climbed towards `EMFILE`. Released
+  from a TLS destructor now; the shim links pthread for it, and the
+  released binary keeps its glibc 2.6 floor.
+- Deleting a session whose command was still running could fail partway
+  with `Directory not empty`, having already destroyed most of it: the
+  shim recreated backups as fast as the delete unlinked them. Sessions
+  are renamed out of the way before removal.
 - The shell hook wrote its done marker without checking the session
   directory still existed, so a store removed underneath it made every
   later prompt print `no such file or directory`. Fixed in all three
