@@ -70,7 +70,16 @@ _undo_precmd() {
     elif [[ -n ${_undo_saved_preload-} ]]; then
         export LD_PRELOAD=$_undo_saved_preload
     fi
-    : >| "$_undo_session/done"
+    # The shim gives up when it would otherwise fill the disk. Say so:
+    # precmd runs once per session, so this warns exactly once, and it is
+    # the only chance the user gets to hear about it.
+    if [[ -s $_undo_session/degraded ]]; then
+        printf 'undo: %s\n' "$(<"$_undo_session/degraded")" >&2
+    fi
+
+    # the store can be removed underneath a running command, by gc or by
+    # hand. A hook has no business erroring at the prompt when it is.
+    [[ -d $_undo_session ]] && : >| "$_undo_session/done" 2>/dev/null
     unset _undo_saved_preload _undo_session
 
     if command -v undo >/dev/null 2>&1; then
