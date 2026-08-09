@@ -52,7 +52,16 @@ EOF
     ;;
 esac
 
-cmds=$(printf 'rm %s/play/file.txt\nundo -y\ncat %s/play/file.txt\nexit\n' \
+# The last two lines pull the store out from under a live session: precmd
+# used to write its done marker unconditionally and spent the rest of the
+# session shouting at the prompt about a directory that was gone.
+#
+# It removes its own session directory and nothing else, so the earlier
+# sessions this test checks below survive. The shell expands
+# $UNDO_SESSION, then env clears it so the shim is disarmed for the rm:
+# armed, it backs each deleted file up into the very directory being
+# deleted and recreates it as fast as rm unlinks it.
+cmds=$(printf 'rm %s/play/file.txt\nundo -y\ncat %s/play/file.txt\nenv -u UNDO_SESSION rm -rf "$UNDO_SESSION"\ntrue\nexit\n' \
     "$WORK" "$WORK")
 
 # The exit status is the last command's, not a verdict on the hook, and
@@ -85,6 +94,9 @@ fail() {
 }
 
 grep -q "precious data" <<<"$out" || fail "file not restored"
+
+grep -qi "no such file or directory" <<<"$out" &&
+    fail "hook complained at the prompt after the store was removed"
 
 # The store proves which half of the hook ran. A session directory means
 # preexec fired; the done marker means postexec did, which is what puts
