@@ -20,7 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -29,6 +31,11 @@
 #endif
 
 #define DEFAULT_MAX_BYTES (256UL * 1024 * 1024)
+#define DEFAULT_MAX_SESSION (1UL << 30)
+#define DEFAULT_MIN_FREE (2UL << 30)
+
+/* how many bytes of backups may go by between two statvfs calls */
+#define FREE_CHECK_INTERVAL (64UL << 20)
 
 static __thread int in_shim;
 
@@ -93,9 +100,17 @@ static void enc_append(char *dst, size_t cap, size_t *len, const char *s)
     }
 }
 
+static int recording_stopped(void);
+
 /* jwrite("op", field1, field2, NULL) */
 static void jwrite(const char *op, ...)
 {
+    /* Once a ceiling has been hit the journal stops growing too. It is
+     * small next to the backups, but the point of the free-space floor is
+     * that undo stops touching a filesystem in trouble, and a record of
+     * changes whose backups were never taken is not worth a byte of it. */
+    if (recording_stopped())
+        return;
     int fd = journal_fd();
     if (fd < 0)
         return;
@@ -206,6 +221,165 @@ static unsigned long max_bytes(void)
     return v;
 }
 
+/* A limit read from the environment, where an explicit 0 means no limit.
+ * Distinct from max_bytes() above, whose 0 has always meant "unset". */
+static unsigned long limit_env(const char *name, unsigned long def)
+{
+    const char *s = getenv(name);
+    if (!s || !*s)
+        return def;
+    return parse_ulong(s);
+}
+
+/* ---------- space guards ---------- */
+
+/* Two ceilings, both enforced here rather than by the shell hook. The hook
+ * only gets a turn when the command returns, and the command that fills a
+ * disk is the one that runs for a day: an editor, a dev server, an agent.
+ * By the time precmd could call `undo gc` the damage is done, and gc would
+ * skip the session anyway because it is still live.
+ *
+ * Whichever ceiling trips first, the session stops recording and drops a
+ * `degraded` file saying why. Stopping early loses undo history, which is
+ * bad. Filling the filesystem takes down everything else on the machine,
+ * which is worse, and a tool that exists to save you from mistakes has no
+ * business making that one.
+ *
+ * The counter lives in a shared mapping, not a static, so the thousand
+ * compilers a build forks all bill to the same session budget. */
+struct budget {
+    uint64_t saved;   /* bytes of backups written by every process */
+    uint32_t stopped; /* set once, by whoever trips a ceiling first */
+};
+
+static struct budget *budget_map(void)
+{
+    static __thread char cached_dir[PATH_MAX];
+    static __thread struct budget *map;
+    const char *dir = session_dir();
+    if (!dir)
+        return NULL;
+    if (map && strcmp(cached_dir, dir) == 0)
+        return map;
+    if (map) {
+        munmap(map, sizeof *map);
+        map = NULL;
+    }
+    char path[PATH_MAX];
+    if ((size_t)snprintf(path, sizeof path, "%s/budget", dir) >= sizeof path)
+        return NULL;
+    REAL(open, int, const char *, int, ...);
+    int fd = real_open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return NULL;
+    /* only grow it: a racing process may already have mapped this page,
+     * and truncating back to zero would reset a budget mid-session */
+    struct stat st;
+    REAL(ftruncate, int, int, off_t);
+    if (fstat(fd, &st) != 0 ||
+        (st.st_size < (off_t)sizeof *map &&
+         real_ftruncate(fd, (off_t)sizeof *map) != 0)) {
+        close(fd);
+        return NULL;
+    }
+    void *p = mmap(NULL, sizeof *map, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (p == MAP_FAILED)
+        return NULL;
+    map = p;
+    snprintf(cached_dir, sizeof cached_dir, "%s", dir);
+    return map;
+}
+
+/* Records why recording stopped, once per session. Called before the
+ * filesystem is actually full, so this small write still has room. */
+static void budget_stop(const char *why)
+{
+    struct budget *b = budget_map();
+    if (b && __atomic_exchange_n(&b->stopped, 1, __ATOMIC_RELAXED))
+        return; /* someone else already wrote the marker */
+    const char *dir = session_dir();
+    if (!dir)
+        return;
+    char path[PATH_MAX];
+    if ((size_t)snprintf(path, sizeof path, "%s/degraded", dir) >= sizeof path)
+        return;
+    REAL(open, int, const char *, int, ...);
+    int fd = real_open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return;
+    char msg[512];
+    int n = snprintf(msg, sizeof msg, "%s\n", why);
+    if (n > 0) {
+        ssize_t w = write(fd, msg, (size_t)n);
+        (void)w;
+    }
+    close(fd);
+}
+
+static int recording_stopped(void)
+{
+    struct budget *b = budget_map();
+    return b && __atomic_load_n(&b->stopped, __ATOMIC_RELAXED);
+}
+
+/* true if `want` more bytes of backup are affordable */
+static int budget_ok(unsigned long want)
+{
+    struct budget *b = budget_map();
+    if (b && __atomic_load_n(&b->stopped, __ATOMIC_RELAXED))
+        return 0;
+
+    char why[512];
+    unsigned long cap = limit_env("UNDO_MAX_SESSION", DEFAULT_MAX_SESSION);
+    if (b && cap) {
+        unsigned long used = __atomic_load_n(&b->saved, __ATOMIC_RELAXED);
+        if (used + want > cap) {
+            snprintf(why, sizeof why,
+                     "stopped recording: session reached the %lu MB budget "
+                     "(UNDO_MAX_SESSION)",
+                     (cap + (1UL << 19)) >> 20);
+            budget_stop(why);
+            return 0;
+        }
+    }
+
+    unsigned long floor = limit_env("UNDO_MIN_FREE", DEFAULT_MIN_FREE);
+    if (!floor)
+        return 1;
+    /* statvfs on every backup would be wasteful and on none would be
+     * useless; amortise it over the bytes actually written. Starting at
+     * the interval forces a check before the first backup of a session,
+     * so a session opened on an already-full disk never gets going. */
+    static __thread unsigned long since = FREE_CHECK_INTERVAL;
+    since += want;
+    if (since < FREE_CHECK_INTERVAL)
+        return 1;
+    since = 0;
+    const char *dir = session_dir();
+    struct statvfs vfs;
+    if (!dir || statvfs(dir, &vfs) != 0)
+        return 1; /* cannot tell: let the session budget do the limiting */
+    unsigned long avail = (unsigned long)vfs.f_bavail * (unsigned long)vfs.f_frsize;
+    if (avail < floor + want) {
+        snprintf(why, sizeof why,
+                 "stopped recording: %lu MB free on the store's filesystem, "
+                 "floor is %lu MB (UNDO_MIN_FREE)",
+                 (avail + (1UL << 19)) >> 20,
+                 (floor + (1UL << 19)) >> 20);
+        budget_stop(why);
+        return 0;
+    }
+    return 1;
+}
+
+static void budget_add(unsigned long n)
+{
+    struct budget *b = budget_map();
+    if (b)
+        __atomic_add_fetch(&b->saved, (uint64_t)n, __ATOMIC_RELAXED);
+}
+
 static int backup_name(char *out)
 {
     static unsigned long counter;
@@ -267,11 +441,29 @@ static int copy_file(const char *src, const char *dst)
 }
 
 /* Save `abs` before it is destroyed. When the original inode survives the
- * operation untouched (unlink, rename target), a hardlink is enough and
- * costs nothing; when data is rewritten in place (O_TRUNC, plain write
- * opens), we need a full copy. */
+ * operation untouched (unlink, rename target), a hardlink is enough; when
+ * data is rewritten in place (O_TRUNC, plain write opens), we need a full
+ * copy.
+ *
+ * A hardlink costs no extra inode data, which used to read as "costs
+ * nothing", so the per-file cap was only ever applied to copies. It is not
+ * free: the link is what stops the original blocks being returned when the
+ * file is unlinked, so a deleted 4 GB file is 4 GB the store is holding.
+ * Both paths are charged the same now. */
 static int save_file(const char *abs, int need_copy, char *bak)
 {
+    struct stat st;
+    if (lstat(abs, &st) != 0 || !S_ISREG(st.st_mode))
+        return -1;
+    if ((unsigned long)st.st_size > max_bytes()) {
+        errno = EFBIG;
+        return -1;
+    }
+    if (!budget_ok((unsigned long)st.st_size)) {
+        errno = ENOSPC;
+        return -1;
+    }
+
     /* Names can collide when a shell execs its last command without
      * forking (same pid, counter reset); retry with the next counter. */
     for (int tries = 0; tries < 1000; tries++) {
@@ -279,14 +471,18 @@ static int save_file(const char *abs, int need_copy, char *bak)
             return -1;
         if (!need_copy) {
             REAL(link, int, const char *, const char *);
-            if (real_link(abs, bak) == 0)
+            if (real_link(abs, bak) == 0) {
+                budget_add((unsigned long)st.st_size);
                 return 0;
+            }
             if (errno == EEXIST)
                 continue;
             /* cross-device etc: fall through to a copy under this name */
         }
-        if (copy_file(abs, bak) == 0)
+        if (copy_file(abs, bak) == 0) {
+            budget_add((unsigned long)st.st_size);
             return 0;
+        }
         if (errno != EEXIST)
             break;
     }
