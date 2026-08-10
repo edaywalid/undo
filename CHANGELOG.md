@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-08-10
 
 - undo could fill a disk. One session grew to 147G over 23 hours and took
   a 320G filesystem to zero bytes free, which broke every other program on
