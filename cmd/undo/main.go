@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -146,16 +147,34 @@ func cmdList() {
 	}
 }
 
-func cmdShow(args []string) {
-	var s *session.Session
-	var err error
+func getShowSession(args []string) (*session.Session, bool, error) {
 	if len(args) > 0 {
-		s, err = session.Get(args[0])
-	} else {
-		s, err = session.Latest()
+		s, err := session.Get(args[0])
+		return s, false, err
 	}
+	s, err := session.Latest()
+	if errors.Is(err, os.ErrNotExist) {
+		// No non-undone session found. Fall back to the most recent
+		// session (including undone ones) so the user sees what happened
+		// rather than an opaque "no such session" error.
+		if all, lerr := session.List(); lerr == nil {
+			for _, candidate := range all {
+				if len(candidate.Entries) > 0 {
+					return candidate, true, nil
+				}
+			}
+		}
+	}
+	return s, false, err
+}
+
+func cmdShow(args []string) {
+	s, allUndone, err := getShowSession(args)
 	if err != nil {
 		fatal(fmt.Errorf("no such session"))
+	}
+	if allUndone {
+		fmt.Fprintln(os.Stderr, "(all sessions have been undone; showing the most recent)")
 	}
 	fmt.Printf("session %s (%s)\n$ %s\n\n", shortID(s.ID), when(s.ID), s.Cmd)
 	if s.Degraded != "" {
