@@ -21,6 +21,7 @@ test: all
 	./test/hook.sh zsh
 	./test/hook.sh bash
 	./test/hook.sh fish
+	./test/hook.sh nu
 
 install: all
 	install -Dm755 bin/undo $(PREFIX)/bin/undo
@@ -28,6 +29,7 @@ install: all
 	install -Dm644 shell/undo.zsh $(PREFIX)/share/undo/undo.zsh
 	install -Dm644 shell/undo.bash $(PREFIX)/share/undo/undo.bash
 	install -Dm644 shell/undo.fish $(PREFIX)/share/undo/undo.fish
+	install -Dm644 shell/undo.nu $(PREFIX)/share/undo/undo.nu
 	install -Dm644 completions/_undo $(PREFIX)/share/zsh/site-functions/_undo
 	install -Dm644 completions/undo.bash $(PREFIX)/share/bash-completion/completions/undo
 	install -Dm644 completions/undo.fish $(PREFIX)/share/fish/vendor_completions.d/undo.fish
@@ -36,6 +38,7 @@ install: all
 	@echo '  zsh:   source $(PREFIX)/share/undo/undo.zsh   (~/.zshrc)'
 	@echo '  bash:  source $(PREFIX)/share/undo/undo.bash  (~/.bashrc)'
 	@echo '  fish:  source $(PREFIX)/share/undo/undo.fish  (config.fish)'
+	@echo '  nu:    source $(PREFIX)/share/undo/undo.nu    (top of config.nu)'
 
 clean:
 	rm -rf bin build dist
