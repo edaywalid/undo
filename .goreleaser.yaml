@@ -37,6 +37,8 @@ nfpms:
         dst: /usr/share/undo/undo.bash
       - src: shell/undo.fish
         dst: /usr/share/undo/undo.fish
+      - src: shell/undo.nu
+        dst: /usr/share/undo/undo.nu
       - src: completions/_undo
         dst: /usr/share/zsh/site-functions/_undo
       - src: completions/undo.bash
@@ -83,6 +85,7 @@ aurs:
       - 'zsh: shell hook'
       - 'bash: shell hook'
       - 'fish: shell hook'
+      - 'nu: shell hook'
     provides:
       - undo-cli
     conflicts:
@@ -98,6 +101,7 @@ aurs:
       install -Dm644 "./shell/undo.zsh"  "${pkgdir}/usr/share/undo/undo.zsh"
       install -Dm644 "./shell/undo.bash" "${pkgdir}/usr/share/undo/undo.bash"
       install -Dm644 "./shell/undo.fish" "${pkgdir}/usr/share/undo/undo.fish"
+      install -Dm644 "./shell/undo.nu" "${pkgdir}/usr/share/undo/undo.nu"
       install -Dm644 "./completions/_undo" "${pkgdir}/usr/share/zsh/site-functions/_undo"
       install -Dm644 "./completions/undo.bash" "${pkgdir}/usr/share/bash-completion/completions/undo"
       install -Dm644 "./completions/undo.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/undo.fish"
@@ -129,5 +133,6 @@ brews:
         zsh:   source #{HOMEBREW_PREFIX}/share/undo/undo.zsh
         bash:  source #{HOMEBREW_PREFIX}/share/undo/undo.bash
         fish:  source #{HOMEBREW_PREFIX}/share/undo/undo.fish
+        nu:    source #{HOMEBREW_PREFIX}/share/undo/undo.nu  (top of config.nu)
     test: |
       system "#{bin}/undo", "--version"

@@ -26,6 +26,7 @@ applied as many times as you like.
 - [Storage and disk space](#storage-and-disk-space) - what it keeps, for
   how long, and what it costs you
 - [Ignoring build noise](#ignoring-build-noise)
+- [nushell](#nushell) - why it works differently there
 - [Configuration](#configuration) - every environment variable
 - [What it cannot catch](#what-it-cannot-catch)
 - [Secure deletion](#secure-deletion) - read this before `shred`
@@ -136,6 +137,19 @@ echo 'source /usr/share/undo/undo.bash' >> ~/.bashrc && exec bash
 ```fish
 echo 'source /usr/share/undo/undo.fish' >> ~/.config/fish/config.fish && exec fish
 ```
+
+**nushell** (0.100 or newer)
+
+Add this at the **top** of `~/.config/nushell/config.nu`, then restart nu:
+
+```
+source /usr/share/undo/undo.nu
+```
+
+Top of the file, not the bottom. nushell runs `rm`, `mv` and `save`
+inside its own process, so undo re-execs nu once with the shim preloaded,
+and whatever sits above that line runs twice. See [nushell](#nushell) for
+what it covers and the one command it cannot.
 
 Those paths are for a distro package. The hooks land somewhere else for
 the other channels:
@@ -255,6 +269,42 @@ stays undoable only until the next command unless you raise the limits.
 
 Commands that changed nothing leave no session at all. `undo gc` prunes
 on demand, `undo purge` empties the store completely.
+
+## nushell
+
+nushell is the one shell where undo cannot simply wrap your commands.
+`rm`, `mv`, `cp`, `mkdir`, `touch` and `save` are built into nu and run
+inside the nu process itself, so there is no child process for
+`LD_PRELOAD` to attach to. `$env.X = ...` does not help either: it builds
+the environment for processes nu starts and never changes nu's own.
+
+So `undo.nu` re-execs nu once at startup with the shim already loaded,
+and passes the current session through a small pointer file the hook
+rewrites before each command. Put the `source` line at the top of your
+`config.nu` so the rest of your config does not run twice.
+
+What that gets you:
+
+| nushell command | recorded |
+| --- | --- |
+| `rm`, `rm -r` | yes |
+| `mv`, including over an existing file | yes |
+| `mkdir`, `touch` | yes |
+| `save`, `save --force`, `o>` redirection | yes |
+| external commands (`^rm`, git, build tools) | yes |
+| `cp` | only via the alias below |
+
+`cp` is the exception. nushell's `cp` talks to the kernel directly
+instead of going through libc, so no `LD_PRELOAD` shim can see it, and a
+copy over an existing file would destroy the target and record nothing.
+`undo.nu` therefore defines `alias cp = ^cp`, handing the name to
+coreutils, whose flags are a superset. Delete that line from `undo.nu` if
+you would rather keep nushell's own `cp` and accept that copies are not
+undoable.
+
+Because the shim rides inside nu, the hook also adds nushell's own config,
+data and cache directories to the ignore list, so nu rewriting its history
+does not show up as a change you made.
 
 ## Secure deletion
 
