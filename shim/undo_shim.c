@@ -53,11 +53,55 @@ static void tls_arm(void);
 
 /* ---------- session state ---------- */
 
+/* The session normally arrives in UNDO_SESSION, exported by the hook
+ * before each command. Nushell cannot do that: it runs rm, mv, cp and
+ * save inside its own process, so there is no child to export to, and
+ * `$env.X = ...` only builds the environment handed to externals. It
+ * never touches the environment of the running nu, which is the process
+ * this shim is loaded into.
+ *
+ * So the nu hook exports UNDO_SESSION_PTR once, pointing at a file it
+ * rewrites with the current session before every command, and we read
+ * the session from there instead.
+ *
+ * Only nushell sets UNDO_SESSION_PTR. Every other shell exports
+ * UNDO_SESSION and returns above, paying one getenv that finds nothing. */
+static __thread char ptr_path[PATH_MAX];
+static __thread char ptr_buf[PATH_MAX];
+static __thread int ptr_fd = -1;
+
+static const char *session_from_ptr(void)
+{
+    const char *path = getenv("UNDO_SESSION_PTR");
+    if (!path || *path != '/')
+        return NULL;
+    if (ptr_fd < 0 || strcmp(ptr_path, path) != 0) {
+        if (ptr_fd >= 0)
+            close(ptr_fd);
+        REAL(open, int, const char *, int, ...);
+        ptr_fd = real_open(path, O_RDONLY | O_CLOEXEC);
+        if (ptr_fd < 0)
+            return NULL;
+        snprintf(ptr_path, sizeof ptr_path, "%s", path);
+        tls_arm();
+    }
+    /* held open and pread from offset 0, so a command costs one syscall
+     * on a page-cached file rather than an open/read/close */
+    ssize_t n = pread(ptr_fd, ptr_buf, sizeof ptr_buf - 1, 0);
+    if (n <= 0)
+        return NULL;
+    ptr_buf[n] = 0;
+    char *nl = strchr(ptr_buf, '\n');
+    if (nl)
+        *nl = 0;
+    return ptr_buf[0] == '/' ? ptr_buf : NULL;
+}
+
 static const char *session_dir(void)
 {
     const char *s = getenv("UNDO_SESSION");
     if (!s || !*s || *s != '/')
-        return NULL;
+        return session_from_ptr();
     return s;
 }
 
@@ -364,6 +408,10 @@ static void thread_cleanup(void *unused)
     if (bgt_map) {
         munmap(bgt_map, sizeof *bgt_map);
         bgt_map = NULL;
+    }
+    if (ptr_fd >= 0) {
+        close(ptr_fd);
+        ptr_fd = -1;
     }
 }
 
