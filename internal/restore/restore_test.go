@@ -168,6 +168,76 @@ func TestRmdirUndoRecreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestModeFromOctalKeepsHighBits(t *testing.T) {
+	cases := []struct {
+		journal uint64
+		want    os.FileMode
+	}{
+		{0o644, 0o644},
+		{0o4755, 0o755 | os.ModeSetuid},
+		{0o2775, 0o775 | os.ModeSetgid},
+		{0o1777, 0o777 | os.ModeSticky},
+		{0o7000, os.ModeSetuid | os.ModeSetgid | os.ModeSticky},
+	}
+	for _, c := range cases {
+		got := modeFromOctal(c.journal)
+		if got != c.want {
+			t.Errorf("modeFromOctal(%04o) = %v, want %v", c.journal, got, c.want)
+		}
+		if got.Perm() != os.FileMode(c.journal&0o777) {
+			t.Errorf("modeFromOctal(%04o).Perm() = %04o", c.journal, got.Perm())
+		}
+	}
+}
+
+func TestRmdirUndoRestoresStickyDirectory(t *testing.T) {
+	work := t.TempDir()
+	gone := filepath.Join(work, "shared")
+	s := newSession(t, []journal.Entry{
+		{Op: journal.OpRmdir, Fields: []string{gone, "1777"}},
+	})
+	if _, err := Run(s, Undo, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSticky == 0 {
+		t.Errorf("recreated directory lost the sticky bit: %v", fi.Mode())
+	}
+	if fi.Mode().Perm() != 0o777 {
+		t.Errorf("recreated directory perm = %04o, want 0777", fi.Mode().Perm())
+	}
+}
+
+func TestChmodUndoRestoresSetuid(t *testing.T) {
+	work := t.TempDir()
+	bin := filepath.Join(work, "helper")
+	write(t, bin, "#!/bin/sh\n")
+	// the command ran `chmod 755` over a setuid binary, so the journal
+	// holds 4755 as the mode to go back to
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(t, []journal.Entry{
+		{Op: journal.OpChmod, Fields: []string{bin, "4755", "755"}},
+	})
+	if _, err := Run(s, Undo, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSetuid == 0 {
+		t.Errorf("restored file lost the setuid bit: %v", fi.Mode())
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("restored file perm = %04o, want 0755", fi.Mode().Perm())
+	}
+}
+
 func TestDryRunTouchesNothing(t *testing.T) {
 	work := t.TempDir()
 	victim := filepath.Join(work, "gone.txt")
