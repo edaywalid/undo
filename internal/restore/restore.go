@@ -103,6 +103,24 @@ func slot(s *session.Session, i int) string {
 	return filepath.Join(s.Dir, "data", fmt.Sprintf("undo-%d", i))
 }
 
+// modeFromOctal turns a mode as the shim journals it (st_mode & 07777)
+// into an os.FileMode. Go keeps the permission bits where POSIX has
+// them but encodes setuid, setgid and sticky as flags of its own, and
+// os.Chmod only looks at those, so casting drops all three.
+func modeFromOctal(m uint64) os.FileMode {
+	fm := os.FileMode(m & 0o777)
+	if m&0o4000 != 0 {
+		fm |= os.ModeSetuid
+	}
+	if m&0o2000 != 0 {
+		fm |= os.ModeSetgid
+	}
+	if m&0o1000 != 0 {
+		fm |= os.ModeSticky
+	}
+	return fm
+}
+
 // Run replays the journal of s in the given direction.
 func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 	res := &Result{}
@@ -325,8 +343,8 @@ func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 				if perr != nil {
 					mode = 0o755
 				}
-				if err = os.MkdirAll(field(0), os.FileMode(mode)); err == nil {
-					err = os.Chmod(field(0), os.FileMode(mode))
+				if err = os.MkdirAll(field(0), modeFromOctal(mode)); err == nil {
+					err = os.Chmod(field(0), modeFromOctal(mode))
 				}
 			} else {
 				if !exists(field(0)) {
@@ -359,7 +377,7 @@ func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 			if !act() {
 				continue
 			}
-			err = os.Chmod(field(0), os.FileMode(mode))
+			err = os.Chmod(field(0), modeFromOctal(mode))
 
 		case journal.OpLost:
 			if dir == Undo {
