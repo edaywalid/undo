@@ -88,6 +88,34 @@ func TestUndoUnlinkConflictSkipsWithoutForce(t *testing.T) {
 	}
 }
 
+func TestRedoUnlinkKeepsOccupiedBackup(t *testing.T) {
+	work := t.TempDir()
+	victim := filepath.Join(work, "back.txt")
+	write(t, victim, "recreated since") // path exists again
+	s := newSession(t, nil)
+	backup := filepath.Join(s.Dir, "data", "b1")
+	write(t, backup, "the only copy")
+	s.Entries = []journal.Entry{{Op: journal.OpUnlink, Fields: []string{victim, backup}}}
+
+	// the undo skips, so the backup still holds the deleted file
+	res, _ := Run(s, Undo, Options{})
+	if res.Done != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("want 0 done / 1 skipped, got %d done / %d skipped", res.Done, len(res.Skipped))
+	}
+
+	// redoing must not park the live file on top of it
+	res, _ = Run(s, Redo, Options{})
+	if res.Done != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("want 0 done / 1 skipped, got %d done / %d skipped", res.Done, len(res.Skipped))
+	}
+	if got := read(t, backup); got != "the only copy" {
+		t.Errorf("redo overwrote the backup: %q", got)
+	}
+	if got := read(t, victim); got != "recreated since" {
+		t.Errorf("redo moved the live file away: %q", got)
+	}
+}
+
 func TestModSwapsBothDirections(t *testing.T) {
 	work := t.TempDir()
 	file := filepath.Join(work, "config.yaml")
@@ -150,6 +178,35 @@ func TestRenameUndoRestoresBothSides(t *testing.T) {
 	}
 	if read(t, newp) != "clobbered original of b" {
 		t.Errorf("b.txt backup not restored: %q", read(t, newp))
+	}
+}
+
+func TestRedoRenameKeepsOccupiedBackup(t *testing.T) {
+	work := t.TempDir()
+	oldp := filepath.Join(work, "a.txt")
+	newp := filepath.Join(work, "b.txt")
+	write(t, oldp, "recreated since") // the source path exists again
+	write(t, newp, "moved content")
+	s := newSession(t, nil)
+	backup := filepath.Join(s.Dir, "data", "b1")
+	write(t, backup, "the only copy of b")
+	s.Entries = []journal.Entry{{Op: journal.OpRename, Fields: []string{oldp, newp, backup}}}
+
+	// the undo skips, so the backup still holds what the mv clobbered
+	res, _ := Run(s, Undo, Options{})
+	if res.Done != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("want 0 done / 1 skipped, got %d done / %d skipped", res.Done, len(res.Skipped))
+	}
+
+	res, _ = Run(s, Redo, Options{})
+	if res.Done != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("want 0 done / 1 skipped, got %d done / %d skipped", res.Done, len(res.Skipped))
+	}
+	if got := read(t, backup); got != "the only copy of b" {
+		t.Errorf("redo overwrote the backup: %q", got)
+	}
+	if got := read(t, newp); got != "moved content" {
+		t.Errorf("redo moved b.txt away: %q", got)
 	}
 }
 

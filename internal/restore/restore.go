@@ -191,6 +191,10 @@ func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 					done = false
 					break
 				}
+				if exists(field(1)) {
+					skip("backup still holds the deleted file (this entry was never undone)")
+					continue
+				}
 				if !act() {
 					continue
 				}
@@ -254,6 +258,10 @@ func Run(s *session.Session, dir Direction, opts Options) (*Result, error) {
 				}
 				if exists(new_) && !hasBak && !opts.Force {
 					skip("target occupied, use --force to overwrite")
+					continue
+				}
+				if exists(new_) && hasBak && exists(bak) {
+					skip("backup still holds the clobbered target (this entry was never undone)")
 					continue
 				}
 				if !act() {
