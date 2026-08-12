@@ -50,7 +50,12 @@ replace "$tmp/build/libundo_${arch}.so" "$PREFIX/lib/undo/libundo.so" 755
 install -Dm644 "$tmp/shell/undo.zsh" "$PREFIX/share/undo/undo.zsh"
 install -Dm644 "$tmp/shell/undo.bash" "$PREFIX/share/undo/undo.bash"
 install -Dm644 "$tmp/shell/undo.fish" "$PREFIX/share/undo/undo.fish"
-install -Dm644 "$tmp/shell/undo.nu" "$PREFIX/share/undo/undo.nu"
+# The nushell hook arrived after v0.3.0, and this script installs whatever
+# the latest release holds. Skip it rather than abort when an older
+# release has no such file.
+if [ -f "$tmp/shell/undo.nu" ]; then
+    install -Dm644 "$tmp/shell/undo.nu" "$PREFIX/share/undo/undo.nu"
+fi
 install -Dm644 "$tmp/completions/_undo" "$PREFIX/share/zsh/site-functions/_undo"
 install -Dm644 "$tmp/completions/undo.bash" "$PREFIX/share/bash-completion/completions/undo"
 install -Dm644 "$tmp/completions/undo.fish" "$PREFIX/share/fish/vendor_completions.d/undo.fish"
