@@ -50,6 +50,7 @@ replace "$tmp/build/libundo_${arch}.so" "$PREFIX/lib/undo/libundo.so" 755
 install -Dm644 "$tmp/shell/undo.zsh" "$PREFIX/share/undo/undo.zsh"
 install -Dm644 "$tmp/shell/undo.bash" "$PREFIX/share/undo/undo.bash"
 install -Dm644 "$tmp/shell/undo.fish" "$PREFIX/share/undo/undo.fish"
+install -Dm644 "$tmp/shell/undo.nu" "$PREFIX/share/undo/undo.nu"
 install -Dm644 "$tmp/completions/_undo" "$PREFIX/share/zsh/site-functions/_undo"
 install -Dm644 "$tmp/completions/undo.bash" "$PREFIX/share/bash-completion/completions/undo"
 install -Dm644 "$tmp/completions/undo.fish" "$PREFIX/share/fish/vendor_completions.d/undo.fish"
@@ -76,6 +77,7 @@ case "$shell_name" in
     zsh)  rc="$HOME/.zshrc";                  hook_line="source $PREFIX/share/undo/undo.zsh" ;;
     bash) rc="$HOME/.bashrc";                 hook_line="source $PREFIX/share/undo/undo.bash" ;;
     fish) rc="$HOME/.config/fish/config.fish"; hook_line="source $PREFIX/share/undo/undo.fish" ;;
+    nu)   rc="$HOME/.config/nushell/config.nu"; hook_line="source $PREFIX/share/undo/undo.nu" ;;
 esac
 
 # an install that leaves `undo` unrunnable is not an install
@@ -85,6 +87,9 @@ case ":$PATH:" in
         case "$shell_name" in
             fish) path_line="fish_add_path $PREFIX/bin" ;;
             zsh | bash) path_line="export PATH=\"$PREFIX/bin:\$PATH\"" ;;
+            # nushell's hook goes to the top of the file, and PATH set
+            # above it would be prepended twice by the re-exec
+            nu) path_line="" ;;
         esac
         ;;
 esac
@@ -94,6 +99,7 @@ manual_instructions() {
     echo "  zsh:   echo 'source $PREFIX/share/undo/undo.zsh'  >> ~/.zshrc"
     echo "  bash:  echo 'source $PREFIX/share/undo/undo.bash' >> ~/.bashrc"
     echo "  fish:  echo 'source $PREFIX/share/undo/undo.fish' >> ~/.config/fish/config.fish"
+    echo "  nu:    add 'source $PREFIX/share/undo/undo.nu' at the TOP of ~/.config/nushell/config.nu"
     echo
     echo "then open a new terminal. 'undo doctor' will confirm it is active."
 }
@@ -134,11 +140,23 @@ elif ! ask_rc; then
     manual_instructions
 else
     mkdir -p "$(dirname "$rc")"
-    {
-        printf '\n# undo: revert what the last command did (undo.edaywalid.com)\n'
-        [ -n "$path_line" ] && printf '%s\n' "$path_line"
-        printf '%s\n' "$hook_line"
-    } >>"$rc"
+    if [ "$shell_name" = nu ]; then
+        # undo.nu re-execs nu with the shim preloaded, so config lines
+        # above it run a second time. Appending would rerun the whole
+        # file, and a config that prepends to PATH would do it twice.
+        tmp_rc="$rc.undo-new"
+        {
+            printf '# undo: revert what the last command did (undo.edaywalid.com)\n'
+            printf '%s\n\n' "$hook_line"
+            [ -f "$rc" ] && cat "$rc"
+        } >"$tmp_rc" && mv "$tmp_rc" "$rc"
+    else
+        {
+            printf '\n# undo: revert what the last command did (undo.edaywalid.com)\n'
+            [ -n "$path_line" ] && printf '%s\n' "$path_line"
+            printf '%s\n' "$hook_line"
+        } >>"$rc"
+    fi
     echo "hook added to $rc"
     [ -n "$path_line" ] && echo "added $PREFIX/bin to your PATH there too"
     echo "('undo uninstall' takes these lines back out)"
