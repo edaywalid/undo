@@ -11,7 +11,7 @@
     "@fontsource-variable/archivo": "^5.2.5",
     "@fontsource-variable/jetbrains-mono": "^5.2.5",
     "@tanstack/react-router": "^1.131.7",
-    "@tanstack/react-start": "^1.131.7",
+    "@tanstack/react-start": "1.168.60",
     "motion": "^12.23.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
